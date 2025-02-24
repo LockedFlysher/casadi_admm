@@ -1,6 +1,8 @@
 import casadi as ca
+import numpy as np
 from numpy.f2py.auxfuncs import throw_error
 from sympy.testing.pytest import warns
+import matplotlib.pyplot as plt
 
 # note ： 带有S的都是向量
 # 本问题是基于凸优化问题的假设的
@@ -8,6 +10,7 @@ class OptimizationProblem:
     def __init__(self):
         # 变量相关
         self.__alpha__ = 0.5
+        self.__augmented_penalty__ = 0.02
         # 变量的初始值和迭代值，后续转换为DM进行运算
         self.__x_k__ = None
         # 符号变量列表
@@ -21,8 +24,7 @@ class OptimizationProblem:
 
         # 目标项累加得到目标方程，有三种方式，一种是直接设置目标函数方程，一种是添加函数项，一种是目标函数+函数项
         self.__objective_terms_ = []
-        self.__objective_function__ = ca.SX.zeros(1)
-        self.__total_objective_function__ = ca.SX.zeros(1)
+        self.__objective_expression__ = ca.SX.zeros(1)
         # 约束方程，用来评估对偶上升的情况下对于各条件的违反程度
         self.__equality_constraints__ = []
         self.__inequality_constraints__ = []
@@ -34,13 +36,16 @@ class OptimizationProblem:
         # 成果
         self.__next_x_function__ = None
         self.__next_multiplier_function__ = None
+        self.__objective_expression__ = None
+        self.__objective_function__ = None
 
-        self.__objective_function_set__ = False
+        self.__objective_expression_set__ = False
         self.__objective_terms_set__ = False
         self.__dual_ascent_function_generated__ = False
         self.__multiplier_defined__ = False
         self.__variable_defined__ = False
         self.__initial_guess_set__ = False
+        self.__use_augmented_lagrange_function__ = True
 
         self.__next_mus__ = None
         self.__next_lambdas__ = None
@@ -48,7 +53,19 @@ class OptimizationProblem:
         self.__next_x_function__ = None
         self.__next_mu_lambda__ = None
 
-    def dual_ascent(self, step_num):
+    def dual_ascent(self, step_num, use_augmented_lagrange_function=False, plot=False):
+        """
+        对偶上升法求解优化问题
+
+        Args:
+            step_num: 迭代步数
+            use_augmented_lagrange_function: 是否使用增广拉格朗日函数
+            plot: 是否绘制收敛过程
+
+        Returns:
+            优化结果字典
+        """
+        self.__use_augmented_lagrange_function__ = use_augmented_lagrange_function
         self.generate_dual_ascent_function()
         self.set_initial_guess()
 
@@ -56,7 +73,7 @@ class OptimizationProblem:
         has_inequality = len(self.__inequality_constraints__) > 0
 
         for i in range(step_num):
-            # 根据约束条件的存在情况调用不同的函数
+            # 执行迭代步骤
             if has_equality and has_inequality:
                 self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__mu_k__, self.__lambda_k__)
                 self.__mu_k__, self.__lambda_k__ = self.__next_multiplier_function__(self.__x_k__, self.__mu_k__,
@@ -76,11 +93,12 @@ class OptimizationProblem:
             result['mu'] = self.__mu_k__
         if has_inequality:
             result['lambda'] = self.__lambda_k__
-
         return result
 
     def define_variables(self, *variables):
         self.__xs__ = ca.vertcat(*variables)
+        self.__objective_function__ = ca.Function('objective_function', [self.__xs__],
+                                                    [self.__objective_expression__])
         self.__variable_defined__ = True
 
     def generate_dual_ascent_function(self):
@@ -93,8 +111,19 @@ class OptimizationProblem:
         # 2. 获取拉格朗日函数
         lagrange_func = self.get_lagrange_function()
 
+        equality_terms = ca.SX.zeros(1)
+        inequality_terms = ca.SX.zeros(1)
+        if self.__use_augmented_lagrange_function__:
+            for h in self.__equality_constraints__:
+                equality_terms += (self.__augmented_penalty__ / 2) * h ** 2
+            # 添加不等式约束的二次惩罚项
+            for g in self.__inequality_constraints__:
+                inequality_terms += (self.__augmented_penalty__ / 2) * ca.fmax(0, g) ** 2
+
+        augmented_lagrange_func = lagrange_func + equality_terms + inequality_terms
+
         # 3. 计算关于x的梯度
-        grad_l_x = ca.gradient(lagrange_func, self.__xs__)
+        grad_l_x = ca.gradient(augmented_lagrange_func, self.__xs__)
         self.__next_xs__ = self.__xs__ - self.__alpha__ * grad_l_x
 
         # 4. 处理约束条件
@@ -157,16 +186,12 @@ class OptimizationProblem:
         self.__objective_terms_set__ = True
 
     # 累加所有的目标项，得到目标函数的符号表达式，但是需要一个flag，决定是不是使用了累加
-    def get_total_objective_function(self):
+    def get_objective_expression(self):
         # 情况1： 目标函数没有，但是通过加额外项设置目标函数
-        if not self.__objective_function_set__ and not self.__objective_terms_set__:
+        if not self.__objective_expression_set__:
             throw_error('未添加目标函数')
         else:
-            for term in self.__objective_terms_:
-                self.__total_objective_function__+=term
-            self.__total_objective_function__+=self.__objective_function__
-
-        return self.__total_objective_function__
+            return self.__objective_expression__
 
 
     # 添加等式约束h(x)=0
@@ -212,14 +237,14 @@ class OptimizationProblem:
 
         self.__multiplier_defined__ = True
 
-    def set_objective_function(self, objective_function):
-        self.__objective_function__ = objective_function
-        self.__objective_function_set__ = True
+    def set_objective_function(self, objective_expression):
+        self.__objective_expression__ = objective_expression
+        self.__objective_expression_set__ = True
 
     # 构建拉格朗日函数
     def get_lagrange_function(self):
         # 首先确保目标函数已经构建
-        obj_func = self.get_total_objective_function()
+        obj_func = self.get_objective_expression()
         self.initialize_multipliers()
         # 构建拉格朗日函数
         self.__lagrange_function__ = obj_func
