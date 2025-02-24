@@ -7,7 +7,7 @@ from sympy.testing.pytest import warns
 class OptimizationProblem:
     def __init__(self):
         # 变量相关
-        self.__alpha__ = 0.02
+        self.__alpha__ = 0.5
         # 变量的初始值和迭代值，后续转换为DM进行运算
         self.__x_k__ = None
         # 符号变量列表
@@ -169,11 +169,11 @@ class OptimizationProblem:
         return self.__total_objective_function__
 
 
-    # 添加等式约束
+    # 添加等式约束h(x)=0
     def add_equality_constraint(self, equality_constraint):
         self.__equality_constraints__.append(equality_constraint)
 
-    # 添加不等式约束
+    # 添加不等式约束g(x)<=0
     def add_inequality_constraint(self, inequality_constraint):
         self.__inequality_constraints__.append(inequality_constraint)
 
@@ -275,5 +275,4 @@ class OptimizationProblem:
             else:
                 throw_error('未生成拉格朗日函数')
         self.__initial_guess_set__ = True
-
 

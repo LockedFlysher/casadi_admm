@@ -13,7 +13,6 @@ if __name__ == '__main__':
     op.define_variables(x1,x2)
     # 等式约束用的是mu，不等式约束用的lambda
     op.add_equality_constraint(x1 + x2 - 1)
-    # op.add_inequality_constraint(x1 - x2)
-
-    result = op.dual_ascent(1000)
+    op.add_inequality_constraint(x1 - x2)
+    result = op.dual_ascent(30)
     print(result)
