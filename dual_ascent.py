@@ -13,5 +13,5 @@ if __name__ == '__main__':
     # 等式约束用的是mu，不等式约束用的lambda
     op.add_equality_constraint(x1 + x2 - 1)
     op.add_inequality_constraint(x1 - x2)
-    result = op.dual_ascent(10,False)
+    result = op.dual_ascent(5,True)
     print(result)

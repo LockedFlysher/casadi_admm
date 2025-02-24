@@ -10,7 +10,7 @@ class OptimizationProblem:
     def __init__(self):
         # 变量相关
         self.__alpha__ = 0.5
-        self.__augmented_penalty__ = 0.02
+        self.__augmented_penalty__ = 0.5
         # 变量的初始值和迭代值，后续转换为DM进行运算
         self.__x_k__ = None
         # 符号变量列表
