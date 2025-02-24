@@ -3,13 +3,15 @@ import casadi
 import optimization_problem
 
 if __name__ == '__main__':
-    x1 = casadi.SX.sym('x1')
-    x2 = casadi.SX.sym('x2')
+    # note : 目前的x是必须加下划线的
+    x1 = casadi.SX.sym('x_1')
+    x2 = casadi.SX.sym('x_2')
 
     # 创建实例
     op = optimization_problem.OptimizationProblem()
     op.add_objective_term(term=x1 * x1)
     op.add_objective_term(term=x2 * x2)
+    op.define_variables(variables=casadi.vertcat(x1,x2))
     print(op.get_objective_function())
     # 等式约束用的是mu，不等式约束用的lambda
     op.add_equality_constraint(x1 + x2 - 1)
@@ -17,5 +19,5 @@ if __name__ == '__main__':
     print(op.get_multipliers())
     print(op.get_lagrange_function())
 
-    # 对偶问题的求解
-    history = op.dual_ascent(100)
+    result = op.dual_ascent(10000)
+    print(result)

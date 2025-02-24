@@ -11,7 +11,7 @@ from sympy.testing.pytest import warns
 class OptimizationProblem:
     def __init__(self):
         # 变量相关
-        self.__alpha__ = 0.01
+        self.__alpha__ = 0.02
         # 变量的初始值和迭代值，后续转换为DM进行运算
         self.__x_k__ = None
         # 符号变量列表
@@ -35,17 +35,43 @@ class OptimizationProblem:
         self.__augmented_lagrange_function__ = ca.SX.zeros(1)
 
         # 成果
-        self.__dual_ascent_function__ = None
+        self.__next_x_function__ = None
+        self.__next_multiplier_function__ = None
 
         self.__objective_function_set__ = False
         self.__dual_ascent_function_generated__ = False
         self.__multiplier_defined__ = False
+        self.__variable_defined__ = False
+        self.__initial_guess_set__ = False
 
-        self.__next_mu__ = None
-        self.__next_lambda__ = None
-        self.__next_x__ = None
+        self.__next_mus__ = None
+        self.__next_lambdas__ = None
+        self.__next_xs__ = None
         self.__next_x_function__ = None
         self.__next_mu_lambda__ = None
+
+
+    def dual_ascent(self,step_num):
+        if not self.__dual_ascent_function_generated__:
+            self.generate_dual_ascent_function()
+
+        if not self.__initial_guess_set__:
+            self.set_initial_guess()
+
+        for i in range(step_num):
+            self.__x_k__ = self.__next_x_function__(self.__x_k__,self.__mu_k__,self.__lambda_k__)
+            self.__mu_k__,self.__lambda_k__ = self.__next_multiplier_function__(self.__x_k__,self.__mu_k__,self.__lambda_k__)
+
+        return {
+            'x': self.__x_k__,
+            'mu': self.__mu_k__,
+            'lambda': self.__lambda_k__,
+        }
+
+
+    def define_variables(self,variables):
+        self.__xs__ = variables
+        self.__variable_defined__ = True
 
     def generate_dual_ascent_function(self):
         # 问题1 ： 如何确定刚开始的lambda和mu，全部假设为0吗？---随机初始化，先假设为0
@@ -67,31 +93,13 @@ class OptimizationProblem:
             # 获取拉格朗日函数
             lagrange_func = self.get_lagrange_function()
 
-            variables = ca.symvar(lagrange_func)
-
-            # 提取原始变量（非对偶变量）
-            x_vars = []
-            x_counter = 0
-            for var in variables:
-                var_name = var.name()
-                if not (var_name.startswith('lambda_')) and not (var_name.startswith('mu_')):
-                    x_vars.append(var)
-                    print('added x var', var_name)
-                if var_name.startswith('x'):
-                    x_counter+=1
-            if not x_vars:
-                raise ValueError("No primal variables found in the Lagrangian")
-
-            self.__xs__ = ca.SX.sym('x', x_counter)
-            x_vec = ca.vertcat(*x_vars)
-
             # 对拉格朗日函数关于x求梯度
-            grad_l_x = ca.gradient(lagrange_func, x_vec)
+            grad_l_x = ca.gradient(lagrange_func, self.__xs__)
 
             # 创建一个函数，把当前的mu和lambda输入进去，得到x的梯度
             # note: *是解包操作，把列表拆出来成为单独的变量
-            print([x_vec, self.__mus__, self.__lambdas__])
-            self.__next_x__ = self.__xs__ - self.__alpha__ * grad_l_x
+            print([self.__xs__, self.__mus__, self.__lambdas__])
+            self.__next_xs__ = self.__xs__ - self.__alpha__ * grad_l_x
 
             # 把等式约束、不等式约束放进来
             # 修正：添加空约束的处理
@@ -100,32 +108,17 @@ class OptimizationProblem:
             inequality_constraints = ca.vertcat(
                 *self.get_inequality_constraints()) if self.get_inequality_constraints() else ca.SX.zeros(0)
 
-            # 用来更新对偶变量
-            constrain_func = ca.Function('constrains',
-                                         [x_vec],
-                                         [equality_constraints, inequality_constraints])
-
-            # 计算约束违反程度
-            h_val, g_val = constrain_func(self.__xs__)
-
             # 统一向量化处理 (需要确保乘子已初始化为CasADi向量)
-            self.__next_mu__ = self.__mus__ + self.__alpha__ * h_val if self.__mus__.size1() > 0 else []
-            self.__next_lambda__ = ca.fmax(0, self.__lambdas__ + self.__alpha__ * g_val) if self.__lambdas__.size1() > 0 else []
+            self.__next_mus__ = self.__mus__ + self.__alpha__ * equality_constraints if self.__mus__.size1() > 0 else []
+            self.__next_lambdas__ = ca.fmax(0, self.__lambdas__ + self.__alpha__ * inequality_constraints) if self.__lambdas__.size1() > 0 else []
 
+            self.__next_x_function__ = ca.Function('next_x_function',
+                                                   [self.__xs__, self.__mus__, self.__lambdas__],
+                                                   [self.__next_xs__])
+            self.__next_multiplier_function__ = ca.Function('next_multiplier_function',
+                                                            [self.__xs__, self.__mus__, self.__lambdas__],
+                                                            [self.__next_mus__, self.__next_lambdas__])
             self.__dual_ascent_function_generated__ = True
-            # 返回当前迭代的结果
-            return {
-                'primal_variables': self.__x_k__,
-                'dual_variables': {
-                    'mu': self.__mu_k__,
-                    'lambda': self.__lambda_k__
-                },
-                'constraints_violation': {
-                    'equality': h_val,
-                    'inequality': g_val
-                }
-            }
-
 
     # 添加目标项到目标函数中
     def add_objective_term(self, term):
@@ -233,81 +226,19 @@ class OptimizationProblem:
                 'inequality_multipliers': self.__lambdas__
             }
 
-    def set_initial_guess(self,initial_guess):
-        self.__x_k__=initial_guess
+    def set_initial_guess(self, initial_guess=None):
+        if initial_guess is not None:
+            self.__x_k__ = initial_guess
+        else:
+            if self.__variable_defined__:
+                self.__x_k__ = ca.DM.zeros(self.__xs__.size1())
+            else:
+                throw_error('未设置变量')
+            if self.__multiplier_defined__:
+                self.__mu_k__ = ca.DM.zeros(self.__mus__.size1())
+                self.__lambda_k__ = ca.DM.zeros(self.__lambdas__.size1())
+            else:
+                throw_error('未生成拉格朗日函数')
+        self.__initial_guess_set__ = True
 
-
-    def dual_ascent(self, number_of_steps):
-        # 存储优化过程中的历史数据
-        history = {
-            'primal_vars': [],
-            'dual_vars_mu': [],
-            'dual_vars_lambda': [],
-            'equality_violations': [],
-            'inequality_violations': [],
-            'iterations': []
-        }
-
-        # 执行优化迭代
-        for i in range(number_of_steps):
-            result = self.generate_dual_ascent_function()
-            # 记录历史数据
-            history['primal_vars'].append(float(result['primal_variables']))
-            history['dual_vars_mu'].append([float(mu) for mu in result['dual_variables']['mu']])
-            history['dual_vars_lambda'].append([float(lam) for lam in result['dual_variables']['lambda']])
-            history['equality_violations'].append([float(h) for h in result['constraints_violation']['equality']])
-            history['inequality_violations'].append([float(g) for g in result['constraints_violation']['inequality']])
-            history['iterations'].append(i)
-
-        # 创建可视化图表
-        plt.figure(figsize=(15, 10))
-
-        # 1. 原变量收敛图
-        plt.subplot(2, 2, 1)
-        plt.plot(history['iterations'], history['primal_vars'], 'b-', label='Primal Variable')
-        plt.title('Primal Variable Convergence')
-        plt.xlabel('Iteration')
-        plt.ylabel('Value')
-        plt.grid(True)
-        plt.legend()
-
-        # 2. 对偶变量(mu)收敛图
-        plt.subplot(2, 2, 2)
-        for i, mu_series in enumerate(zip(*history['dual_vars_mu'])):
-            plt.plot(history['iterations'], mu_series, label=f'μ_{i}')
-        plt.title('Dual Variables (μ) Convergence')
-        plt.xlabel('Iteration')
-        plt.ylabel('Value')
-        plt.grid(True)
-        plt.legend()
-
-        # 3. 对偶变量(lambda)收敛图
-        plt.subplot(2, 2, 3)
-        for i, lambda_series in enumerate(zip(*history['dual_vars_lambda'])):
-            plt.plot(history['iterations'], lambda_series, label=f'λ_{i}')
-        plt.title('Dual Variables (λ) Convergence')
-        plt.xlabel('Iteration')
-        plt.ylabel('Value')
-        plt.grid(True)
-        plt.legend()
-
-        # 4. 约束违反度
-        plt.subplot(2, 2, 4)
-        # 等式约束违反度
-        for i, eq_series in enumerate(zip(*history['equality_violations'])):
-            plt.plot(history['iterations'], eq_series, '--', label=f'Equality_{i}')
-        # 不等式约束违反度
-        for i, ineq_series in enumerate(zip(*history['inequality_violations'])):
-            plt.plot(history['iterations'], ineq_series, ':', label=f'Inequality_{i}')
-        plt.title('Constraints Violation')
-        plt.xlabel('Iteration')
-        plt.ylabel('Violation')
-        plt.yscale('log')  # 使用对数坐标以便观察小值
-        plt.grid(True)
-        plt.legend()
-
-        plt.tight_layout()
-        plt.show()
-
-        return history
 
