@@ -1,3 +1,7 @@
 ```shell
-sudo apt-get install python3-wxgtk4.0
+pip3 install casadi
 ```
+
+## 算法拼图
+算法需要依次实现：
+- 

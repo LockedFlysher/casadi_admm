@@ -5,7 +5,6 @@ from numpy.array_api import zeros
 from numpy.f2py.auxfuncs import throw_error
 from sympy.testing.pytest import warns
 
-
 # note ： 带有S的都是向量
 # 本问题是基于凸优化问题的假设的
 class OptimizationProblem:
@@ -68,9 +67,8 @@ class OptimizationProblem:
             'lambda': self.__lambda_k__,
         }
 
-
-    def define_variables(self,variables):
-        self.__xs__ = variables
+    def define_variables(self, *variables):
+        self.__xs__ = ca.vertcat(*variables)
         self.__variable_defined__ = True
 
     def generate_dual_ascent_function(self):
