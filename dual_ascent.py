@@ -4,8 +4,8 @@ import optimization_problem
 
 if __name__ == '__main__':
     # note : 目前的x是必须加下划线的
-    x1 = casadi.SX.sym('x_1')
-    x2 = casadi.SX.sym('x_2')
+    x1 = casadi.SX.sym('x1')
+    x2 = casadi.SX.sym('x2')
     # 创建实例
     op = optimization_problem.OptimizationProblem()
     op.set_objective_function(x1*x1+x2*x2)
