@@ -25,6 +25,5 @@ if __name__ == '__main__':
     op2 = optimization_problem.OptimizationProblem(configuration)
     result2 = op2.dual_ascent(5, False)
 
-
     print(result)
     print(result2)
