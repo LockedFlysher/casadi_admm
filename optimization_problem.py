@@ -4,10 +4,21 @@ from numpy.f2py.auxfuncs import throw_error
 from sympy.testing.pytest import warns
 import matplotlib.pyplot as plt
 
+# note ： Python中双下划线开头的属性会被自动重命名（名称修饰），导致外部访问失败。
+class OptimizationProblemConfiguration:
+    def __init__(self, configuration):
+        self.variables = configuration['variables']                  # 改为单下划线
+        self.objective_function = configuration['objective_function']
+        self.equality_constraints = configuration['equality_constraints']
+        self.inequality_constraints = configuration['inequality_constraints']
+        self.initial_guess = configuration['initial_guess']
+
+
+
 # note ： 带有S的都是向量
-# 本问题是基于凸优化问题的假设的
+# 本问题是基于凸优化问题的假设的，采取了对偶上升法的优化求解类
 class OptimizationProblem:
-    def __init__(self):
+    def __init__(self, configuration=None):
         # 变量相关
         self.__alpha__ = 0.5
         self.__augmented_penalty__ = 0.5
@@ -15,6 +26,7 @@ class OptimizationProblem:
         self.__x_k__ = None
         # 符号变量列表
         self.__xs__ = None
+        self.__num_of_variables__ = None
         # 不等式约束的lambda，lambdas是用来进行符号计算的，lambda_k是数值计算的
         self.__lambdas__ = None
         self.__lambda_k__ = None
@@ -23,14 +35,12 @@ class OptimizationProblem:
         self.__mu_k__ = None
 
         # 目标项累加得到目标方程，有三种方式，一种是直接设置目标函数方程，一种是添加函数项，一种是目标函数+函数项
-        self.__objective_terms_ = []
         self.__objective_expression__ = ca.SX.zeros(1)
         # 约束方程，用来评估对偶上升的情况下对于各条件的违反程度
         self.__equality_constraints__ = []
         self.__inequality_constraints__ = []
         # 获得拉格朗日方程
         self.__lagrange_function__ = ca.SX.zeros(1)
-        # todo 完成增广形式迭代求解
         self.__augmented_lagrange_function__ = ca.SX.zeros(1)
 
         # 成果
@@ -40,7 +50,6 @@ class OptimizationProblem:
         self.__objective_function__ = None
 
         self.__objective_expression_set__ = False
-        self.__objective_terms_set__ = False
         self.__dual_ascent_function_generated__ = False
         self.__multiplier_defined__ = False
         self.__variable_defined__ = False
@@ -52,6 +61,20 @@ class OptimizationProblem:
         self.__next_xs__ = None
         self.__next_x_function__ = None
         self.__next_mu_lambda__ = None
+        self.__use_configuration__ = False
+
+        if configuration is not None:
+            self.set_objective_function(configuration.objective_function)
+            self.set_variables(configuration.variables)
+            for inequality_constraint in configuration.inequality_constraints:
+                self.add_inequality_constraint(inequality_constraint)
+            for equality_constraint in configuration.equality_constraints:
+                self.add_equality_constraint(equality_constraint)
+            self.set_initial_guess(configuration.initial_guess)
+            self.__use_configuration__ = True
+            self.__objective_expression_set__ = True
+            self.__variable_defined__ = True
+
 
     def dual_ascent(self, step_num, use_augmented_lagrange_function=False, plot=False):
         """
@@ -95,10 +118,12 @@ class OptimizationProblem:
             result['lambda'] = self.__lambda_k__
         return result
 
-    def define_variables(self, *variables):
+    def set_variables(self, variables):
         self.__xs__ = ca.vertcat(*variables)
-        self.__objective_function__ = ca.Function('objective_function', [self.__xs__],
-                                                    [self.__objective_expression__])
+        self.__num_of_variables__ = len(variables)
+        self.__objective_function__ = ca.Function('objective_function',
+                                                  [self.__xs__],
+                                                  [self.__objective_expression__])
         self.__variable_defined__ = True
 
     def generate_dual_ascent_function(self):
@@ -180,11 +205,6 @@ class OptimizationProblem:
 
         self.__dual_ascent_function_generated__ = True
 
-    # 添加目标项到目标函数中
-    def add_objective_term(self, term):
-        self.__objective_terms_.append(term)
-        self.__objective_terms_set__ = True
-
     # 累加所有的目标项，得到目标函数的符号表达式，但是需要一个flag，决定是不是使用了累加
     def get_objective_expression(self):
         # 情况1： 目标函数没有，但是通过加额外项设置目标函数
@@ -192,7 +212,6 @@ class OptimizationProblem:
             throw_error('未添加目标函数')
         else:
             return self.__objective_expression__
-
 
     # 添加等式约束h(x)=0
     def add_equality_constraint(self, equality_constraint):
@@ -227,7 +246,7 @@ class OptimizationProblem:
             if len(self.__inequality_constraints__) > 0:
                 if self.__lambdas__ is None:  # 只有在未初始化时才初始化
                     if len(self.__inequality_constraints__) > 1:
-                        self.__lambdas__ = ca.SX.sym('lambda_',len(self.__inequality_constraints__))
+                        self.__lambdas__ = ca.SX.sym('lambda_', len(self.__inequality_constraints__))
                     else:
                         self.__lambdas__ = ca.SX.sym('lambda_0')
             else:
@@ -256,25 +275,6 @@ class OptimizationProblem:
             self.__lagrange_function__ += self.__lambdas__[i] * g
         return self.__lagrange_function__
 
-    # # 构建增广拉格朗日函数
-    # def get_augmented_lagrange_function(self):
-    #     # 首先获取普通的拉格朗日函数
-    #     lagrange_func = self.get_lagrange_function()
-    #
-    #     # 构建增广项
-    #     augmented_terms = ca.SX.zeros(1)
-    #
-    #     # 等式约束的二次惩罚项
-    #     for h in self.__equality_constraints__:
-    #         augmented_terms += (self.__rho__ / 2) * h ** 2
-    #
-    #     # 不等式约束的二次惩罚项
-    #     for g in self.__inequality_constraints__:
-    #         augmented_terms += (self.__rho__ / 2) * ca.fmax(0, g) ** 2
-    #
-    #     self.__augmented_lagrange_function__ = lagrange_func + augmented_terms
-    #     return self.__augmented_lagrange_function__
-
     # 获取所有拉格朗日乘子
     def get_multipliers(self):
         # 如果乘子还没有初始化，先初始化它们
@@ -301,3 +301,39 @@ class OptimizationProblem:
                 throw_error('未生成拉格朗日函数')
         self.__initial_guess_set__ = True
 
+    def set_mu_and_lambda(self, mu_, lambda_):
+        self.__mu_k__ = mu_
+        self.__lambda_k__ = lambda_
+
+    def compute_next_x(self, x, mu_, lambda_):
+        # 覆盖一下所有的变量
+        self.__x_k__ = x
+        self.__mu_k__ = mu_
+        self.__lambda_k__ = lambda_
+
+        self.generate_dual_ascent_function()
+        self.set_initial_guess()
+
+        has_equality = len(self.__equality_constraints__) > 0
+        has_inequality = len(self.__inequality_constraints__) > 0
+
+        # 执行迭代步骤
+        if has_equality and has_inequality:
+            self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__mu_k__, self.__lambda_k__)
+            self.__mu_k__, self.__lambda_k__ = self.__next_multiplier_function__(self.__x_k__, self.__mu_k__,
+                                                                                 self.__lambda_k__)
+        elif has_equality:
+            self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__mu_k__)
+            self.__mu_k__ = self.__next_multiplier_function__(self.__x_k__, self.__mu_k__)
+        elif has_inequality:
+            self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__lambda_k__)
+            self.__lambda_k__ = self.__next_multiplier_function__(self.__x_k__, self.__lambda_k__)
+        else:
+            self.__x_k__ = self.__next_x_function__(self.__x_k__)
+        # 返回结果
+        result = {'x': self.__x_k__}
+        if has_equality:
+            result['mu'] = self.__mu_k__
+        if has_inequality:
+            result['lambda'] = self.__lambda_k__
+        return result
