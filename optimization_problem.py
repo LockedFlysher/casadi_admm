@@ -1,68 +1,88 @@
 import casadi as ca
 import numpy as np
-from numpy.f2py.auxfuncs import throw_error
-from sympy.testing.pytest import warns
 import matplotlib.pyplot as plt
+from typing import Dict, List, Union, Optional, Any, Tuple
 
-# note ： Python中双下划线开头的属性会被自动重命名（名称修饰），导致外部访问失败。
+
 class OptimizationProblemConfiguration:
-    def __init__(self, configuration):
-        self.variables = configuration['variables']                  # 改为单下划线
+    """优化问题配置类，用于存储优化问题的各种配置参数"""
+
+    def __init__(self, configuration: Dict[str, Any]):
+        """
+        初始化优化问题配置
+
+        Args:
+            configuration: 包含优化问题配置的字典，需包含以下键:
+                - variables: 优化变量
+                - objective_function: 目标函数
+                - equality_constraints: 等式约束
+                - inequality_constraints: 不等式约束
+                - initial_guess: 初始猜测值
+        """
+        self.variables = configuration['variables']
         self.objective_function = configuration['objective_function']
         self.equality_constraints = configuration['equality_constraints']
         self.inequality_constraints = configuration['inequality_constraints']
         self.initial_guess = configuration['initial_guess']
 
 
-
-# note ： 带有S的都是向量
-# 本问题是基于凸优化问题的假设的，采取了对偶上升法的优化求解类
 class OptimizationProblem:
-    def __init__(self, configuration=None):
+    """
+    基于凸优化问题假设的优化求解类，采用对偶上升法
+    """
+
+    def __init__(self, configuration: Optional[OptimizationProblemConfiguration] = None):
+        """
+        初始化优化问题求解器
+
+        Args:
+            configuration: 可选的优化问题配置
+        """
+        # 算法参数
+        self._alpha = 0.5  # 步长
+        self._augmented_penalty = 0.5  # 增广拉格朗日惩罚因子
+
         # 变量相关
-        self.__alpha__ = 0.5
-        self.__augmented_penalty__ = 0.5
-        # 变量的初始值和迭代值，后续转换为DM进行运算
-        self.__x_k__ = None
-        # 符号变量列表
-        self.__xs__ = None
-        self.__num_of_variables__ = None
-        # 不等式约束的lambda，lambdas是用来进行符号计算的，lambda_k是数值计算的
-        self.__lambdas__ = None
-        self.__lambda_k__ = None
-        # 等式约束的mu,mus是用来进行符号计算的，mu_k是数值计算的
-        self.__mus__ = None
-        self.__mu_k__ = None
+        self._x_k = None  # 变量的当前值
+        self._xs = None  # 符号变量
+        self._num_of_variables = None  # 变量数量
 
-        # 目标项累加得到目标方程，有三种方式，一种是直接设置目标函数方程，一种是添加函数项，一种是目标函数+函数项
-        self.__objective_expression__ = ca.SX.zeros(1)
-        # 约束方程，用来评估对偶上升的情况下对于各条件的违反程度
-        self.__equality_constraints__ = []
-        self.__inequality_constraints__ = []
-        # 获得拉格朗日方程
-        self.__lagrange_function__ = ca.SX.zeros(1)
-        self.__augmented_lagrange_function__ = ca.SX.zeros(1)
+        # 拉格朗日乘子相关
+        self._lambdas = None  # 不等式约束的符号乘子
+        self._lambda_k = None  # 不等式约束的数值乘子
+        self._mus = None  # 等式约束的符号乘子
+        self._mu_k = None  # 等式约束的数值乘子
 
-        # 成果
-        self.__next_x_function__ = None
-        self.__next_multiplier_function__ = None
-        self.__objective_expression__ = None
-        self.__objective_function__ = None
+        # 目标函数和约束
+        self._objective_expression = ca.SX.zeros(1)  # 目标函数表达式
+        self._equality_constraints = []  # 等式约束列表
+        self._inequality_constraints = []  # 不等式约束列表
 
-        self.__objective_expression_set__ = False
-        self.__dual_ascent_function_generated__ = False
-        self.__multiplier_defined__ = False
-        self.__variable_defined__ = False
-        self.__initial_guess_set__ = False
-        self.__use_augmented_lagrange_function__ = True
+        # 拉格朗日函数
+        self._lagrange_function = ca.SX.zeros(1)  # 拉格朗日函数
+        self._augmented_lagrange_function = ca.SX.zeros(1)  # 增广拉格朗日函数
 
-        self.__next_mus__ = None
-        self.__next_lambdas__ = None
-        self.__next_xs__ = None
-        self.__next_x_function__ = None
-        self.__next_mu_lambda__ = None
-        self.__use_configuration__ = False
+        # 迭代函数
+        self._next_x_function = None  # 下一步 x 的计算函数
+        self._next_multiplier_function = None  # 下一步乘子的计算函数
+        self._objective_function = None  # 目标函数
 
+        # 状态标志
+        self._objective_expression_set = False  # 目标函数是否已设置
+        self._dual_ascent_function_generated = False  # 对偶上升函数是否已生成
+        self._multiplier_defined = False  # 乘子是否已定义
+        self._variable_defined = False  # 变量是否已定义
+        self._initial_guess_set = False  # 初始猜测是否已设置
+        self._use_augmented_lagrange_function = True  # 是否使用增广拉格朗日函数
+
+        # 中间变量
+        self._next_mus = None  # 下一步 mu 的表达式
+        self._next_lambdas = None  # 下一步 lambda 的表达式
+        self._next_xs = None  # 下一步 x 的表达式
+        self._next_mu_lambda = None  # 下一步 mu 和 lambda 的表达式
+        self._use_configuration = False  # 是否使用配置
+
+        # 如果提供了配置，则使用配置初始化
         if configuration is not None:
             self.set_objective_function(configuration.objective_function)
             self.set_variables(configuration.variables)
@@ -71,12 +91,12 @@ class OptimizationProblem:
             for equality_constraint in configuration.equality_constraints:
                 self.add_equality_constraint(equality_constraint)
             self.set_initial_guess(configuration.initial_guess)
-            self.__use_configuration__ = True
-            self.__objective_expression_set__ = True
-            self.__variable_defined__ = True
+            self._use_configuration = True
+            self._objective_expression_set = True
+            self._variable_defined = True
 
-
-    def dual_ascent(self, step_num, use_augmented_lagrange_function=False, plot=False):
+    def dual_ascent(self, step_num: int, use_augmented_lagrange_function: bool = False,
+                    plot: bool = False) -> Dict[str, ca.DM]:
         """
         对偶上升法求解优化问题
 
@@ -86,48 +106,56 @@ class OptimizationProblem:
             plot: 是否绘制收敛过程
 
         Returns:
-            优化结果字典
+            优化结果字典，包含优化变量和拉格朗日乘子
         """
-        self.__use_augmented_lagrange_function__ = use_augmented_lagrange_function
+        self._use_augmented_lagrange_function = use_augmented_lagrange_function
         self.generate_dual_ascent_function()
         self.set_initial_guess()
 
-        has_equality = len(self.__equality_constraints__) > 0
-        has_inequality = len(self.__inequality_constraints__) > 0
+        has_equality = len(self._equality_constraints) > 0
+        has_inequality = len(self._inequality_constraints) > 0
 
         for i in range(step_num):
             # 执行迭代步骤
             if has_equality and has_inequality:
-                self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__mu_k__, self.__lambda_k__)
-                self.__mu_k__, self.__lambda_k__ = self.__next_multiplier_function__(self.__x_k__, self.__mu_k__,
-                                                                                     self.__lambda_k__)
+                self._x_k = self._next_x_function(self._x_k, self._mu_k, self._lambda_k)
+                self._mu_k, self._lambda_k = self._next_multiplier_function(self._x_k, self._mu_k, self._lambda_k)
             elif has_equality:
-                self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__mu_k__)
-                self.__mu_k__ = self.__next_multiplier_function__(self.__x_k__, self.__mu_k__)
+                self._x_k = self._next_x_function(self._x_k, self._mu_k)
+                self._mu_k = self._next_multiplier_function(self._x_k, self._mu_k)
             elif has_inequality:
-                self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__lambda_k__)
-                self.__lambda_k__ = self.__next_multiplier_function__(self.__x_k__, self.__lambda_k__)
+                self._x_k = self._next_x_function(self._x_k, self._lambda_k)
+                self._lambda_k = self._next_multiplier_function(self._x_k, self._lambda_k)
             else:
-                self.__x_k__ = self.__next_x_function__(self.__x_k__)
+                self._x_k = self._next_x_function(self._x_k)
 
         # 返回结果
-        result = {'x': self.__x_k__}
+        result = {'x': self._x_k}
         if has_equality:
-            result['mu'] = self.__mu_k__
+            result['mu'] = self._mu_k
         if has_inequality:
-            result['lambda'] = self.__lambda_k__
+            result['lambda'] = self._lambda_k
         return result
 
-    def set_variables(self, variables):
-        self.__xs__ = ca.vertcat(*variables)
-        self.__num_of_variables__ = len(variables)
-        self.__objective_function__ = ca.Function('objective_function',
-                                                  [self.__xs__],
-                                                  [self.__objective_expression__])
-        self.__variable_defined__ = True
+    def set_variables(self, variables: List[ca.SX]):
+        """
+        设置优化变量
+
+        Args:
+            variables: 优化变量列表
+        """
+        self._xs = ca.vertcat(*variables)
+        self._num_of_variables = len(variables)
+        self._objective_function = ca.Function('objective_function',
+                                               [self._xs],
+                                               [self._objective_expression])
+        self._variable_defined = True
 
     def generate_dual_ascent_function(self):
-        if self.__dual_ascent_function_generated__:
+        """
+        生成对偶上升函数
+        """
+        if self._dual_ascent_function_generated:
             return
 
         # 1. 初始化乘子
@@ -138,202 +166,283 @@ class OptimizationProblem:
 
         equality_terms = ca.SX.zeros(1)
         inequality_terms = ca.SX.zeros(1)
-        if self.__use_augmented_lagrange_function__:
-            for h in self.__equality_constraints__:
-                equality_terms += (self.__augmented_penalty__ / 2) * h ** 2
+        if self._use_augmented_lagrange_function:
+            for h in self._equality_constraints:
+                equality_terms += (self._augmented_penalty / 2) * h ** 2
             # 添加不等式约束的二次惩罚项
-            for g in self.__inequality_constraints__:
-                inequality_terms += (self.__augmented_penalty__ / 2) * ca.fmax(0, g) ** 2
+            for g in self._inequality_constraints:
+                inequality_terms += (self._augmented_penalty / 2) * ca.fmax(0, g) ** 2
 
         augmented_lagrange_func = lagrange_func + equality_terms + inequality_terms
 
         # 3. 计算关于x的梯度
-        grad_l_x = ca.gradient(augmented_lagrange_func, self.__xs__)
-        self.__next_xs__ = self.__xs__ - self.__alpha__ * grad_l_x
+        grad_l_x = ca.gradient(augmented_lagrange_func, self._xs)
+        self._next_xs = self._xs - self._alpha * grad_l_x
 
         # 4. 处理约束条件
-        has_equality = len(self.__equality_constraints__) > 0
-        has_inequality = len(self.__inequality_constraints__) > 0
+        has_equality = len(self._equality_constraints) > 0
+        has_inequality = len(self._inequality_constraints) > 0
 
         # 5. 根据约束条件的存在情况创建不同的函数
         if has_equality and has_inequality:
             # 两种约束都存在
-            equality_constraints = ca.vertcat(*self.__equality_constraints__)
-            inequality_constraints = ca.vertcat(*self.__inequality_constraints__)
+            equality_constraints = ca.vertcat(*self._equality_constraints)
+            inequality_constraints = ca.vertcat(*self._inequality_constraints)
 
-            self.__next_mus__ = self.__mus__ + self.__alpha__ * equality_constraints
-            self.__next_lambdas__ = ca.fmax(0, self.__lambdas__ + self.__alpha__ * inequality_constraints)
+            self._next_mus = self._mus + self._alpha * equality_constraints
+            self._next_lambdas = ca.fmax(0, self._lambdas + self._alpha * inequality_constraints)
 
-            self.__next_x_function__ = ca.Function('next_x_function',
-                                                   [self.__xs__, self.__mus__, self.__lambdas__],
-                                                   [self.__next_xs__])
-            self.__next_multiplier_function__ = ca.Function('next_multiplier_function',
-                                                            [self.__xs__, self.__mus__, self.__lambdas__],
-                                                            [self.__next_mus__, self.__next_lambdas__])
+            self._next_x_function = ca.Function('next_x_function',
+                                                [self._xs, self._mus, self._lambdas],
+                                                [self._next_xs])
+            self._next_multiplier_function = ca.Function('next_multiplier_function',
+                                                         [self._xs, self._mus, self._lambdas],
+                                                         [self._next_mus, self._next_lambdas])
 
         elif has_equality:
             # 只有等式约束
-            equality_constraints = ca.vertcat(*self.__equality_constraints__)
-            self.__next_mus__ = self.__mus__ + self.__alpha__ * equality_constraints
+            equality_constraints = ca.vertcat(*self._equality_constraints)
+            self._next_mus = self._mus + self._alpha * equality_constraints
 
-            self.__next_x_function__ = ca.Function('next_x_function',
-                                                   [self.__xs__, self.__mus__],
-                                                   [self.__next_xs__])
-            self.__next_multiplier_function__ = ca.Function('next_multiplier_function',
-                                                            [self.__xs__, self.__mus__],
-                                                            [self.__next_mus__])
+            self._next_x_function = ca.Function('next_x_function',
+                                                [self._xs, self._mus],
+                                                [self._next_xs])
+            self._next_multiplier_function = ca.Function('next_multiplier_function',
+                                                         [self._xs, self._mus],
+                                                         [self._next_mus])
 
         elif has_inequality:
             # 只有不等式约束
-            inequality_constraints = ca.vertcat(*self.__inequality_constraints__)
-            self.__next_lambdas__ = ca.fmax(0, self.__lambdas__ + self.__alpha__ * inequality_constraints)
+            inequality_constraints = ca.vertcat(*self._inequality_constraints)
+            self._next_lambdas = ca.fmax(0, self._lambdas + self._alpha * inequality_constraints)
 
-            self.__next_x_function__ = ca.Function('next_x_function',
-                                                   [self.__xs__, self.__lambdas__],
-                                                   [self.__next_xs__])
-            self.__next_multiplier_function__ = ca.Function('next_multiplier_function',
-                                                            [self.__xs__, self.__lambdas__],
-                                                            [self.__next_lambdas__])
+            self._next_x_function = ca.Function('next_x_function',
+                                                [self._xs, self._lambdas],
+                                                [self._next_xs])
+            self._next_multiplier_function = ca.Function('next_multiplier_function',
+                                                         [self._xs, self._lambdas],
+                                                         [self._next_lambdas])
 
         else:
             # 没有约束
-            self.__next_x_function__ = ca.Function('next_x_function',
-                                                   [self.__xs__],
-                                                   [self.__next_xs__])
+            self._next_x_function = ca.Function('next_x_function',
+                                                [self._xs],
+                                                [self._next_xs])
             # 无约束问题不需要更新乘子
-            self.__next_multiplier_function__ = None
+            self._next_multiplier_function = None
 
-        self.__dual_ascent_function_generated__ = True
+        self._dual_ascent_function_generated = True
 
-    # 累加所有的目标项，得到目标函数的符号表达式，但是需要一个flag，决定是不是使用了累加
-    def get_objective_expression(self):
-        # 情况1： 目标函数没有，但是通过加额外项设置目标函数
-        if not self.__objective_expression_set__:
-            throw_error('未添加目标函数')
-        else:
-            return self.__objective_expression__
+    def get_objective_expression(self) -> ca.SX:
+        """
+        获取目标函数表达式
 
-    # 添加等式约束h(x)=0
-    def add_equality_constraint(self, equality_constraint):
-        self.__equality_constraints__.append(equality_constraint)
+        Returns:
+            目标函数的符号表达式
 
-    # 添加不等式约束g(x)<=0
-    def add_inequality_constraint(self, inequality_constraint):
-        self.__inequality_constraints__.append(inequality_constraint)
+        Raises:
+            ValueError: 如果未添加目标函数
+        """
+        if not self._objective_expression_set:
+            raise ValueError('未添加目标函数')
+        return self._objective_expression
 
-    # 获取所有等式约束
-    def get_equality_constraints(self):
-        return self.__equality_constraints__
+    def add_equality_constraint(self, equality_constraint: ca.SX):
+        """
+        添加等式约束 h(x) = 0
 
-    # 获取所有不等式约束
-    def get_inequality_constraints(self):
-        return self.__inequality_constraints__
+        Args:
+            equality_constraint: 等式约束表达式
+        """
+        self._equality_constraints.append(equality_constraint)
 
-    # 初始化拉格朗日乘子
+    def add_inequality_constraint(self, inequality_constraint: ca.SX):
+        """
+        添加不等式约束 g(x) <= 0
+
+        Args:
+            inequality_constraint: 不等式约束表达式
+        """
+        self._inequality_constraints.append(inequality_constraint)
+
+    def get_equality_constraints(self) -> List[ca.SX]:
+        """
+        获取所有等式约束
+
+        Returns:
+            等式约束列表
+        """
+        return self._equality_constraints
+
+    def get_inequality_constraints(self) -> List[ca.SX]:
+        """
+        获取所有不等式约束
+
+        Returns:
+            不等式约束列表
+        """
+        return self._inequality_constraints
+
     def initialize_multipliers(self):
-        if not self.__multiplier_defined__:
+        """
+        初始化拉格朗日乘子
+        """
+        if not self._multiplier_defined:
             # 初始化等式约束的拉格朗日乘子
-            if len(self.__equality_constraints__) > 0:
-                if self.__mus__ is None:  # 只有在未初始化时才初始化
-                    if len(self.__equality_constraints__) > 1:
-                        self.__mus__ = ca.SX.sym('mu_', len(self.__equality_constraints__))
+            if len(self._equality_constraints) > 0:
+                if self._mus is None:  # 只有在未初始化时才初始化
+                    if len(self._equality_constraints) > 1:
+                        self._mus = ca.SX.sym('mu_', len(self._equality_constraints))
                     else:
-                        # 讨论没有等式约束的情况
-                        self.__mus__ = ca.SX.sym('mu_0')
+                        self._mus = ca.SX.sym('mu_0')
             else:
-                self.__mus__ = None  # 如果没有等式约束，设置为空列表
+                self._mus = None  # 如果没有等式约束，设置为None
+
             # 初始化不等式约束的拉格朗日乘子
-            if len(self.__inequality_constraints__) > 0:
-                if self.__lambdas__ is None:  # 只有在未初始化时才初始化
-                    if len(self.__inequality_constraints__) > 1:
-                        self.__lambdas__ = ca.SX.sym('lambda_', len(self.__inequality_constraints__))
+            if len(self._inequality_constraints) > 0:
+                if self._lambdas is None:  # 只有在未初始化时才初始化
+                    if len(self._inequality_constraints) > 1:
+                        self._lambdas = ca.SX.sym('lambda_', len(self._inequality_constraints))
                     else:
-                        self.__lambdas__ = ca.SX.sym('lambda_0')
+                        self._lambdas = ca.SX.sym('lambda_0')
             else:
-                self.__lambdas__ = None  # 如果没有不等式约束，设置为空列表
+                self._lambdas = None  # 如果没有不等式约束，设置为None
         else:
-            warns('请不要多次尝试尝试初始化拉格朗日乘子')
+            import warnings
+            warnings.warn('请不要多次尝试初始化拉格朗日乘子')
 
-        self.__multiplier_defined__ = True
+        self._multiplier_defined = True
 
-    def set_objective_function(self, objective_expression):
-        self.__objective_expression__ = objective_expression
-        self.__objective_expression_set__ = True
+    def set_objective_function(self, objective_expression: ca.SX):
+        """
+        设置优化问题的目标函数
 
-    # 构建拉格朗日函数
-    def get_lagrange_function(self):
+        Args:
+            objective_expression: 目标函数表达式
+        """
+        self._objective_expression = objective_expression
+        self._objective_expression_set = True
+
+    def get_lagrange_function(self) -> ca.SX:
+        """
+        构建拉格朗日函数
+
+        Returns:
+            拉格朗日函数表达式
+        """
         # 首先确保目标函数已经构建
         obj_func = self.get_objective_expression()
         self.initialize_multipliers()
-        # 构建拉格朗日函数
-        self.__lagrange_function__ = obj_func
-        # 添加等式约束项hx
-        for i, h in enumerate(self.__equality_constraints__):
-            self.__lagrange_function__ += self.__mus__[i] * h
-        # 添加不等式约束项gx
-        for i, g in enumerate(self.__inequality_constraints__):
-            self.__lagrange_function__ += self.__lambdas__[i] * g
-        return self.__lagrange_function__
 
-    # 获取所有拉格朗日乘子
-    def get_multipliers(self):
+        # 构建拉格朗日函数
+        self._lagrange_function = obj_func
+
+        # 添加等式约束项 h(x)
+        if self._mus is not None:
+            for i, h in enumerate(self._equality_constraints):
+                self._lagrange_function += self._mus[i] * h
+
+        # 添加不等式约束项 g(x)
+        if self._lambdas is not None:
+            for i, g in enumerate(self._inequality_constraints):
+                self._lagrange_function += self._lambdas[i] * g
+
+        return self._lagrange_function
+
+    def get_multipliers(self) -> Dict[str, Union[ca.SX, None]]:
+        """
+        获取所有拉格朗日乘子
+
+        Returns:
+            包含等式和不等式约束乘子的字典
+        """
         # 如果乘子还没有初始化，先初始化它们
         self.initialize_multipliers()
         return {
-            'equality_multipliers': self.__mus__,
-            'inequality_multipliers': self.__lambdas__
+            'equality_multipliers': self._mus,
+            'inequality_multipliers': self._lambdas
         }
 
-    def set_initial_guess(self, initial_guess=None):
+    def set_initial_guess(self, initial_guess: Optional[ca.DM] = None):
+        """
+        设置优化变量和乘子的初始猜测值
+
+        Args:
+            initial_guess: 优化变量的初始值，如果为None则使用零向量
+
+        Raises:
+            ValueError: 如果未设置变量或未生成拉格朗日函数
+        """
         if initial_guess is not None:
-            self.__x_k__ = initial_guess
+            self._x_k = initial_guess
         else:
-            if self.__variable_defined__:
-                self.__x_k__ = ca.DM.zeros(self.__xs__.size1())
+            if self._variable_defined:
+                self._x_k = ca.DM.zeros(self._xs.size1())
             else:
-                throw_error('未设置变量')
-            if self.__multiplier_defined__:
-                if self.__mus__ is not None:
-                    self.__mu_k__ = ca.DM.zeros(self.__mus__.size1())
-                if self.__lambdas__ is not None:
-                    self.__lambda_k__ = ca.DM.zeros(self.__lambdas__.size1())
+                raise ValueError('未设置变量')
+
+            if self._multiplier_defined:
+                if self._mus is not None:
+                    self._mu_k = ca.DM.zeros(self._mus.size1())
+                if self._lambdas is not None:
+                    self._lambda_k = ca.DM.zeros(self._lambdas.size1())
             else:
-                throw_error('未生成拉格朗日函数')
-        self.__initial_guess_set__ = True
+                raise ValueError('未生成拉格朗日函数')
 
-    def set_mu_and_lambda(self, mu_, lambda_):
-        self.__mu_k__ = mu_
-        self.__lambda_k__ = lambda_
+        self._initial_guess_set = True
 
-    def compute_next_x(self, x, mu_, lambda_):
-        # 覆盖一下所有的变量
-        self.__x_k__ = x
-        self.__mu_k__ = mu_
-        self.__lambda_k__ = lambda_
+    def set_mu_and_lambda(self, mu_: ca.DM, lambda_: ca.DM):
+        """
+        设置拉格朗日乘子的值
 
+        Args:
+            mu_: 等式约束乘子的值
+            lambda_: 不等式约束乘子的值
+        """
+        self._mu_k = mu_
+        self._lambda_k = lambda_
+
+    def compute_next_x(self, x: ca.DM, mu_: ca.DM, lambda_: ca.DM) -> Dict[str, ca.DM]:
+        """
+        计算下一步的优化变量和乘子值
+
+        Args:
+            x: 当前优化变量值
+            mu_: 当前等式约束乘子值
+            lambda_: 当前不等式约束乘子值
+
+        Returns:
+            包含更新后的优化变量和乘子的字典
+        """
+        # 更新当前值
+        self._x_k = x
+        self._mu_k = mu_
+        self._lambda_k = lambda_
+
+        # 确保已生成对偶上升函数
         self.generate_dual_ascent_function()
         self.set_initial_guess()
 
-        has_equality = len(self.__equality_constraints__) > 0
-        has_inequality = len(self.__inequality_constraints__) > 0
+        has_equality = len(self._equality_constraints) > 0
+        has_inequality = len(self._inequality_constraints) > 0
 
         # 执行迭代步骤
         if has_equality and has_inequality:
-            self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__mu_k__, self.__lambda_k__)
-            self.__mu_k__, self.__lambda_k__ = self.__next_multiplier_function__(self.__x_k__, self.__mu_k__,
-                                                                                 self.__lambda_k__)
+            self._x_k = self._next_x_function(self._x_k, self._mu_k, self._lambda_k)
+            self._mu_k, self._lambda_k = self._next_multiplier_function(self._x_k, self._mu_k, self._lambda_k)
         elif has_equality:
-            self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__mu_k__)
-            self.__mu_k__ = self.__next_multiplier_function__(self.__x_k__, self.__mu_k__)
+            self._x_k = self._next_x_function(self._x_k, self._mu_k)
+            self._mu_k = self._next_multiplier_function(self._x_k, self._mu_k)
         elif has_inequality:
-            self.__x_k__ = self.__next_x_function__(self.__x_k__, self.__lambda_k__)
-            self.__lambda_k__ = self.__next_multiplier_function__(self.__x_k__, self.__lambda_k__)
+            self._x_k = self._next_x_function(self._x_k, self._lambda_k)
+            self._lambda_k = self._next_multiplier_function(self._x_k, self._lambda_k)
         else:
-            self.__x_k__ = self.__next_x_function__(self.__x_k__)
+            self._x_k = self._next_x_function(self._x_k)
+
         # 返回结果
-        result = {'x': self.__x_k__}
+        result = {'x': self._x_k}
         if has_equality:
-            result['mu'] = self.__mu_k__
+            result['mu'] = self._mu_k
         if has_inequality:
-            result['lambda'] = self.__lambda_k__
+            result['lambda'] = self._lambda_k
         return result
