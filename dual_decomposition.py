@@ -1,4 +1,4 @@
-from dual_ascent import OptimizationProblem
+from dual_ascent import OptimizationProblem, OptimizationProblemConfiguration
 import casadi as ca
 from typing import Dict, List, Union, Optional, Any, Tuple
 
@@ -8,12 +8,14 @@ class DualDecomposition:
     基于ADMM（交替方向乘子法）的对偶分解求解器
     """
 
-    def __init__(self, optimization_problem: OptimizationProblem):
+    def __init__(self, optimization_problem: OptimizationProblem,
+                 subproblem_configs: List[OptimizationProblemConfiguration] = None):
         """
-        初始化对偶分解求解器，设置目标函数，变量，约束
+        初始化对偶分解求解器，设置目标函数，变量，约束，是描述的总的一个优化问题，未被分解
 
         Args:
             optimization_problem: 优化问题实例
+            subproblem_configs: 可选的子问题配置列表
         """
         self._opt_problem = optimization_problem
 
@@ -36,18 +38,24 @@ class DualDecomposition:
         # 状态标志
         self._decomposition_ready = False
 
-    def decompose_problem(self, decomposition_indices: List[List[int]]):
+        # 如果提供了子问题配置，则直接添加子问题
+        if subproblem_configs:
+            for config in subproblem_configs:
+                self.add_subproblem_with_configuration(config)
+            self._decomposition_ready = True
+
+    def decompose_problem(self, decomposition_indices: List[List[int]]) -> List[OptimizationProblem]:
         """
-        将原问题分解为多个子问题
+        将原问题分解为多个子问题，仅创建子问题的框架，不分配目标函数和约束
 
         Args:
             decomposition_indices: 变量分解索引，每个子列表包含一个子问题的变量索引
+
+        Returns:
+            子问题列表，用于手动设置目标函数和约束
         """
-        # 获取原问题的变量和约束
+        # 获取原问题的变量
         original_xs = self._opt_problem.xs
-        original_obj = self._opt_problem.get_objective_expression()
-        eq_constraints = self._opt_problem.get_equality_constraints()
-        ineq_constraints = self._opt_problem.get_inequality_constraints()
 
         # 创建子问题
         for indices in decomposition_indices:
@@ -73,93 +81,67 @@ class DualDecomposition:
         # 标记分解已完成
         self._decomposition_ready = True
 
-    def _distribute_objective(self, objective_terms: List[ca.SX]):
+        return self._subproblems
+
+    def add_subproblem_with_configuration(self, config: OptimizationProblemConfiguration) -> OptimizationProblem:
         """
-        将目标函数分配给各个子问题
+        使用OptimizationProblemConfiguration添加子问题
 
         Args:
-            objective_terms: 目标函数的各个项
+            config: 子问题的配置
+
+        Returns:
+            新创建的子问题实例
         """
-        if not self._decomposition_ready:
-            raise ValueError("请先调用decompose_problem方法")
+        # 创建子问题实例
+        subproblem = OptimizationProblem(config)
 
-        for i, subproblem in enumerate(self._subproblems):
-            # 分配与该子问题相关的目标函数项
-            for term in objective_terms:
-                # 获取子问题的变量
-                sub_vars = ca.vertsplit(self._local_xs[i])
-                # 获取项中的变量
-                term_vars = ca.symvar(term)
+        # 获取子问题的变量
+        sub_xs = config.variables
+        sub_x = ca.vertcat(*sub_xs)
 
-                # 检查是否有交集（通过变量名比较）
-                has_common_var = False
-                for sub_var in sub_vars:
-                    sub_var_name = sub_var.name()
-                    for term_var in term_vars:
-                        term_var_name = term_var.name()
-                        if sub_var_name == term_var_name:
-                            has_common_var = True
-                            break
-                    if has_common_var:
-                        break
+        # 添加到子问题列表
+        self._subproblems.append(subproblem)
+        self._local_xs.append(sub_x)
 
-                if has_common_var:
-                    subproblem.set_objective_function(term)
+        # 创建对应的一致性变量和对偶变量
+        self._consensus_variables.append(ca.SX.sym(f'z_{len(self._subproblems) - 1}', sub_x.size1()))
 
-    def _distribute_constraints(self, eq_constraints: List[ca.SX], ineq_constraints: List[ca.SX]):
+        # 初始化全局变量z和对偶变量u
+        self._z = [ca.DM.zeros(var.size1()) for var in self._consensus_variables]
+        self._u = [ca.DM.zeros(var.size1()) for var in self._consensus_variables]
+
+        # 标记分解已完成
+        self._decomposition_ready = True
+
+        return subproblem
+
+    def add_configured_subproblem(self, subproblem: OptimizationProblem) -> None:
         """
-        将约束分配给各个子问题
+        添加已配置好的子问题
 
         Args:
-            eq_constraints: 等式约束列表
-            ineq_constraints: 不等式约束列表
+            subproblem: 已配置好的子问题实例
         """
-        if not self._decomposition_ready:
-            raise ValueError("请先调用decompose_problem方法")
+        if not isinstance(subproblem, OptimizationProblem):
+            raise TypeError("子问题必须是OptimizationProblem的实例")
 
-        for i, subproblem in enumerate(self._subproblems):
-            # 分配与该子问题相关的约束
-            for constraint in eq_constraints:
-                # 获取子问题的变量
-                sub_vars = ca.vertsplit(self._local_xs[i])
-                # 获取约束中的变量
-                constraint_vars = ca.symvar(constraint)
+        # 获取子问题的变量
+        sub_xs = subproblem.xs
 
-                # 检查是否有交集（通过变量名比较）
-                has_common_var = False
-                for sub_var in sub_vars:
-                    sub_var_name = sub_var.name()
-                    for constraint_var in constraint_vars:
-                        constraint_var_name = constraint_var.name()
-                        if sub_var_name == constraint_var_name:
-                            has_common_var = True
-                            break
-                    if has_common_var:
-                        break
+        # 添加到子问题列表
+        self._subproblems.append(subproblem)
+        self._local_xs.append(sub_xs)
 
-                if has_common_var:
-                    subproblem.add_equality_constraint(constraint)
+        # 创建对应的一致性变量和对偶变量
+        self._consensus_variables.append(ca.SX.sym(f'z_{len(self._subproblems) - 1}', sub_xs.size1()))
 
-            for constraint in ineq_constraints:
-                # 获取子问题的变量
-                sub_vars = ca.vertsplit(self._local_xs[i])
-                # 获取约束中的变量
-                constraint_vars = ca.symvar(constraint)
+        # 初始化全局变量z和对偶变量u
+        self._z = [ca.DM.zeros(var.size1()) for var in self._consensus_variables]
+        self._u = [ca.DM.zeros(var.size1()) for var in self._consensus_variables]
 
-                # 检查是否有交集（通过变量名比较）
-                has_common_var = False
-                for sub_var in sub_vars:
-                    sub_var_name = sub_var.name()
-                    for constraint_var in constraint_vars:
-                        constraint_var_name = constraint_var.name()
-                        if sub_var_name == constraint_var_name:
-                            has_common_var = True
-                            break
-                    if has_common_var:
-                        break
-
-                if has_common_var:
-                    subproblem.add_inequality_constraint(constraint)
+        # 标记分解已完成
+        self._decomposition_ready = True
 
     def generate_admm_functions(self):
         """
@@ -230,7 +212,6 @@ class DualDecomposition:
         # 迭代求解
         for k in range(max_iter):
             # 保存当前的z值，用于计算对偶残差
-            # 对于CasADi的DM对象，我们不使用copy()方法，而是直接创建新对象
             z_old = [ca.DM(z_i) for z_i in self._z]
 
             # 1. 更新所有子问题的x
@@ -259,7 +240,6 @@ class DualDecomposition:
                 dual_res = ca.norm_2(ca.vertcat(*[self._z[i] - z_old[i] for i in range(len(self._z))]))
             else:
                 # 如果长度不一致，可能是因为z_split的结构改变了
-                # 这种情况下，我们可以重新初始化dual_res或使用其他方法计算
                 dual_res = ca.norm_2(z_new - ca.vertcat(*z_old)) if len(z_old) > 0 else float('inf')
 
             if primal_res < tol and dual_res < tol:
@@ -295,25 +275,33 @@ class DualDecomposition:
         """
         self._alpha = alpha
 
-    def distribute_problem(self, objective_terms: List[ca.SX] = None,
-                           eq_constraints: List[ca.SX] = None,
-                           ineq_constraints: List[ca.SX] = None):
+    def get_subproblems(self) -> List[OptimizationProblem]:
         """
-        将原问题的目标函数和约束分配给子问题
+        获取所有子问题
+
+        Returns:
+            子问题列表
+        """
+        if not self._decomposition_ready:
+            raise ValueError("请先调用decompose_problem方法")
+
+        return self._subproblems
+
+    def get_subproblem(self, index: int) -> OptimizationProblem:
+        """
+        获取指定索引的子问题
 
         Args:
-            objective_terms: 目标函数的各个项，如果为None则使用原问题的目标函数
-            eq_constraints: 等式约束列表，如果为None则使用原问题的等式约束
-            ineq_constraints: 不等式约束列表，如果为None则使用原问题的不等式约束
+            index: 子问题索引
+
+        Returns:
+            子问题实例
         """
-        if objective_terms is None:
-            objective_terms = [self._opt_problem.get_objective_expression()]
+        if not self._decomposition_ready:
+            raise ValueError("请先调用decompose_problem方法")
 
-        if eq_constraints is None:
-            eq_constraints = self._opt_problem.get_equality_constraints()
+        if index < 0 or index >= len(self._subproblems):
+            raise ValueError(f"子问题索引{index}超出范围")
 
-        if ineq_constraints is None:
-            ineq_constraints = self._opt_problem.get_inequality_constraints()
+        return self._subproblems[index]
 
-        self._distribute_objective(objective_terms)
-        self._distribute_constraints(eq_constraints, ineq_constraints)
