@@ -150,16 +150,13 @@ class OptimizationProblem:
         lagrange_func = self.get_lagrange_function()
 
         equality_terms = ca.SX.zeros(1)
-        inequality_terms = ca.SX.zeros(1)
         # 添加不等式约束的二次惩罚项
-        for g in self._inequality_constraints:
-            inequality_terms += (self._augmented_penalty / 2) * ca.fmax(0, g) ** 2
 
         if self._use_augmented_lagrange_function:
             for h in self._equality_constraints:
                 equality_terms += (self._augmented_penalty / 2) * h ** 2
 
-        augmented_lagrange_func = lagrange_func + equality_terms + inequality_terms
+        augmented_lagrange_func = lagrange_func + equality_terms
 
         # 3. 计算关于x的梯度
         grad_l_x = ca.gradient(augmented_lagrange_func, self._xs)
@@ -216,11 +213,12 @@ class OptimizationProblem:
 
     def add_inequality_constraint(self, inequality_constraint: ca.SX):
         """
-        添加不等式约束 g(x) <= 0
+        添加不等式约束 g(x) <= 0， 作用到拉格朗日函数上，用惩罚代替不等式约束，提高求解的效率
 
         Args:
             inequality_constraint: 不等式约束表达式
         """
+        self._objective_expression += (self._augmented_penalty / 2) * ca.fmax(0, inequality_constraint) ** 2
         self._inequality_constraints.append(inequality_constraint)
 
     def get_equality_constraints(self) -> List[ca.SX]:
