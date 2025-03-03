@@ -48,8 +48,6 @@ class OptimizationProblem:
         self._num_of_variables = None  # 变量数量
 
         # 拉格朗日乘子相关
-        self._lambdas = None  # 不等式约束的符号乘子
-        self._lambda_k = None  # 不等式约束的数值乘子
         self._mus = None  # 等式约束的符号乘子
         self._mu_k = None  # 等式约束的数值乘子
 
@@ -113,19 +111,12 @@ class OptimizationProblem:
         self.set_initial_guess()
 
         has_equality = len(self._equality_constraints) > 0
-        has_inequality = len(self._inequality_constraints) > 0
 
         for i in range(step_num):
             # 执行迭代步骤
-            if has_equality and has_inequality:
-                self._x_k = self._next_x_function(self._x_k, self._mu_k, self._lambda_k)
-                self._mu_k, self._lambda_k = self._next_multiplier_function(self._x_k, self._mu_k, self._lambda_k)
-            elif has_equality:
+            if has_equality:
                 self._x_k = self._next_x_function(self._x_k, self._mu_k)
                 self._mu_k = self._next_multiplier_function(self._x_k, self._mu_k)
-            elif has_inequality:
-                self._x_k = self._next_x_function(self._x_k, self._lambda_k)
-                self._lambda_k = self._next_multiplier_function(self._x_k, self._lambda_k)
             else:
                 self._x_k = self._next_x_function(self._x_k)
 
@@ -133,8 +124,6 @@ class OptimizationProblem:
         result = {'x': self._x_k}
         if has_equality:
             result['mu'] = self._mu_k
-        if has_inequality:
-            result['lambda'] = self._lambda_k
         return result
 
     def set_variables(self, variables: List[ca.SX]):
@@ -166,12 +155,13 @@ class OptimizationProblem:
 
         equality_terms = ca.SX.zeros(1)
         inequality_terms = ca.SX.zeros(1)
+        # 添加不等式约束的二次惩罚项
+        for g in self._inequality_constraints:
+            inequality_terms += (self._augmented_penalty / 2) * ca.fmax(0, g) ** 2
+
         if self._use_augmented_lagrange_function:
             for h in self._equality_constraints:
                 equality_terms += (self._augmented_penalty / 2) * h ** 2
-            # 添加不等式约束的二次惩罚项
-            for g in self._inequality_constraints:
-                inequality_terms += (self._augmented_penalty / 2) * ca.fmax(0, g) ** 2
 
         augmented_lagrange_func = lagrange_func + equality_terms + inequality_terms
 
@@ -181,25 +171,9 @@ class OptimizationProblem:
 
         # 4. 处理约束条件
         has_equality = len(self._equality_constraints) > 0
-        has_inequality = len(self._inequality_constraints) > 0
 
         # 5. 根据约束条件的存在情况创建不同的函数
-        if has_equality and has_inequality:
-            # 两种约束都存在
-            equality_constraints = ca.vertcat(*self._equality_constraints)
-            inequality_constraints = ca.vertcat(*self._inequality_constraints)
-
-            self._next_mus = self._mus + self._alpha * equality_constraints
-            self._next_lambdas = ca.fmax(0, self._lambdas + self._alpha * inequality_constraints)
-
-            self._next_x_function = ca.Function('next_x_function',
-                                                [self._xs, self._mus, self._lambdas],
-                                                [self._next_xs])
-            self._next_multiplier_function = ca.Function('next_multiplier_function',
-                                                         [self._xs, self._mus, self._lambdas],
-                                                         [self._next_mus, self._next_lambdas])
-
-        elif has_equality:
+        if has_equality:
             # 只有等式约束
             equality_constraints = ca.vertcat(*self._equality_constraints)
             self._next_mus = self._mus + self._alpha * equality_constraints
@@ -210,18 +184,6 @@ class OptimizationProblem:
             self._next_multiplier_function = ca.Function('next_multiplier_function',
                                                          [self._xs, self._mus],
                                                          [self._next_mus])
-
-        elif has_inequality:
-            # 只有不等式约束
-            inequality_constraints = ca.vertcat(*self._inequality_constraints)
-            self._next_lambdas = ca.fmax(0, self._lambdas + self._alpha * inequality_constraints)
-
-            self._next_x_function = ca.Function('next_x_function',
-                                                [self._xs, self._lambdas],
-                                                [self._next_xs])
-            self._next_multiplier_function = ca.Function('next_multiplier_function',
-                                                         [self._xs, self._lambdas],
-                                                         [self._next_lambdas])
 
         else:
             # 没有约束
@@ -297,16 +259,6 @@ class OptimizationProblem:
                         self._mus = ca.SX.sym('mu_0')
             else:
                 self._mus = None  # 如果没有等式约束，设置为None
-
-            # 初始化不等式约束的拉格朗日乘子
-            if len(self._inequality_constraints) > 0:
-                if self._lambdas is None:  # 只有在未初始化时才初始化
-                    if len(self._inequality_constraints) > 1:
-                        self._lambdas = ca.SX.sym('lambda_', len(self._inequality_constraints))
-                    else:
-                        self._lambdas = ca.SX.sym('lambda_0')
-            else:
-                self._lambdas = None  # 如果没有不等式约束，设置为None
         else:
             import warnings
             warnings.warn('请不要多次尝试初始化拉格朗日乘子')
@@ -341,11 +293,6 @@ class OptimizationProblem:
         if self._mus is not None:
             for i, h in enumerate(self._equality_constraints):
                 self._lagrange_function += self._mus[i] * h
-
-        # 添加不等式约束项 g(x)
-        if self._lambdas is not None:
-            for i, g in enumerate(self._inequality_constraints):
-                self._lagrange_function += self._lambdas[i] * g
 
         return self._lagrange_function
 
@@ -384,8 +331,6 @@ class OptimizationProblem:
             if self._multiplier_defined:
                 if self._mus is not None:
                     self._mu_k = ca.DM.zeros(self._mus.size1())
-                if self._lambdas is not None:
-                    self._lambda_k = ca.DM.zeros(self._lambdas.size1())
             else:
                 raise ValueError('未生成拉格朗日函数')
 
