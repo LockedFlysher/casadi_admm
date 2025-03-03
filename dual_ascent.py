@@ -1,24 +1,17 @@
+from audioop import error
+
 import casadi as ca
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Dict, List, Union, Optional, Any, Tuple
+
+from sympy.testing.pytest import warns
 
 
 class OptimizationProblemConfiguration:
     """优化问题配置类，用于存储优化问题的各种配置参数"""
 
     def __init__(self, configuration: Dict[str, Any]):
-        """
-        初始化优化问题配置
-
-        Args:
-            configuration: 包含优化问题配置的字典，需包含以下键:
-                - variables: 优化变量
-                - objective_function: 目标函数
-                - equality_constraints: 等式约束
-                - inequality_constraints: 不等式约束
-                - initial_guess: 初始猜测值
-        """
         self.variables = configuration['variables']
         self.objective_function = configuration['objective_function']
         self.equality_constraints = configuration['equality_constraints']
@@ -86,8 +79,11 @@ class OptimizationProblem:
             self.set_variables(configuration.variables)
             for inequality_constraint in configuration.inequality_constraints:
                 self.add_inequality_constraint(inequality_constraint)
-            for equality_constraint in configuration.equality_constraints:
-                self.add_equality_constraint(equality_constraint)
+            if len(configuration.equality_constraints["A"]) == len(configuration.equality_constraints["C"]):
+                for A_line,C_term in zip(configuration.equality_constraints["A"],configuration.equality_constraints["C"]):
+                    self.add_equality_constraint(ca.mtimes(A_line.T,self._xs)- C_term)
+            else:
+                error("等式矩阵的维度不对")
             self.set_initial_guess(configuration.initial_guess)
             self._use_configuration = True
             self._objective_expression_set = True
