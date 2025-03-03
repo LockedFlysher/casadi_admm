@@ -155,6 +155,7 @@ class DualDecomposition:
             # 获取子问题的变量和约束
             x_i = self._local_xs[i]
             z_i = self._consensus_variables[i]
+            # ui表示的是mu除以系数rho
             u_i = ca.SX.sym(f'u_{i}', x_i.size1())
 
             # 构建增广拉格朗日函数
