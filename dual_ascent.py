@@ -32,8 +32,11 @@ class OptimizationProblem:
             configuration: 可选的优化问题配置
         """
         # 算法参数
-        self._alpha = 0.5  # 步长
-        self._augmented_penalty = 0.5  # 增广拉格朗日惩罚因子
+        self._alpha = 0.05  # 步长
+        self._augmented_equality_penalty = 2  # 增广拉格朗日惩罚因子
+        self._augmented_inequality_penalty = 50
+        self.A = None
+        self.C = None
 
         # 变量相关
         self._x_k = None  # 变量的当前值
@@ -80,6 +83,8 @@ class OptimizationProblem:
             for inequality_constraint in configuration.inequality_constraints:
                 self.add_inequality_constraint(inequality_constraint)
             if len(configuration.equality_constraints["A"]) == len(configuration.equality_constraints["C"]):
+                self.A = ca.vertcat(*configuration.equality_constraints["A"]).T
+                self.C = ca.vertcat(*configuration.equality_constraints["C"])
                 for A_line,C_term in zip(configuration.equality_constraints["A"],configuration.equality_constraints["C"]):
                     self.add_equality_constraint(ca.mtimes(A_line.T,self._xs)- C_term)
             else:
@@ -154,7 +159,7 @@ class OptimizationProblem:
 
         if self._use_augmented_lagrange_function:
             for h in self._equality_constraints:
-                equality_terms += (self._augmented_penalty / 2) * h ** 2
+                equality_terms += (self._augmented_equality_penalty / 2) * h ** 2
 
         augmented_lagrange_func = lagrange_func + equality_terms
 
@@ -211,6 +216,9 @@ class OptimizationProblem:
         """
         self._equality_constraints.append(equality_constraint)
 
+    def get_xs(self):
+        return self._xs
+
     def add_inequality_constraint(self, inequality_constraint: ca.SX):
         """
         添加不等式约束 g(x) <= 0， 作用到拉格朗日函数上，用惩罚代替不等式约束，提高求解的效率
@@ -218,7 +226,7 @@ class OptimizationProblem:
         Args:
             inequality_constraint: 不等式约束表达式
         """
-        self._objective_expression += (self._augmented_penalty / 2) * ca.fmax(0, inequality_constraint) ** 2
+        self._objective_expression += (self._augmented_inequality_penalty / 2) * ca.fmax(0, inequality_constraint) ** 2
         self._inequality_constraints.append(inequality_constraint)
 
     def get_equality_constraints(self) -> List[ca.SX]:
