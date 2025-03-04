@@ -41,6 +41,16 @@ class MultiBlockADMM():
             config: 子问题的配置
             A: 约束矩阵A_i，如果为None则默认为单位矩阵
         """
+        temporary_objective_function = ca.Function("temporary_objective_function",
+                                                   [config.variables],
+                                                   [config.objective_function])
+        temporary_variables = ca.vertcat(config.variables)
+        replaced_objective_expression = temporary_objective_function([temporary_variables])
+        temporary_inequality_constraints_function = ca.Function("temporary_inequality_constraints_function",
+                                                                [config.variables]
+                                                                [config.inequality_constraints])
+        replaced_inequality_constraints_expression = temporary_inequality_constraints_function([temporary_variables])
+
         subproblem = OptimizationProblem(config)
         self._subproblems.append(subproblem)
 
