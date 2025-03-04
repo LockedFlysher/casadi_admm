@@ -20,8 +20,10 @@ class MultiBlockADMM():
         self._rho = 1.0  # 惩罚参数
         self._alpha = 0.1
 
+        self.Xk = None
         # ADMM管理整个问题的约束协调的缩放后的拉格朗日变量
-        self.U = None  # 对偶变量，就是y/rho，这个是ADMM管理器2需要更新的参数
+        self.U = []  # 对偶变量，就是y/rho，这个是ADMM管理器2需要更新的参数
+        self.Uk = None
         # 更新x的函数，用到上层的U对其进行更新，总共需要的函数是有 【约束的组数 + 1】 个，达成并行的更新
         self._update_x_functions = []  # 更新各子问题x的函数列表
         self._update_u_function = None  # 更新对偶变量的函数
@@ -41,16 +43,15 @@ class MultiBlockADMM():
             config: 子问题的配置
             A: 约束矩阵A_i，如果为None则默认为单位矩阵
         """
-        temporary_objective_function = ca.Function("temporary_objective_function",
-                                                   [config.variables],
-                                                   [config.objective_function])
-        temporary_variables = ca.vertcat(config.variables)
-        replaced_objective_expression = temporary_objective_function([temporary_variables])
-        temporary_inequality_constraints_function = ca.Function("temporary_inequality_constraints_function",
-                                                                [config.variables]
-                                                                [config.inequality_constraints])
-        replaced_inequality_constraints_expression = temporary_inequality_constraints_function([temporary_variables])
-
+        # temporary_objective_function = ca.Function("temporary_objective_function",
+        #                                            [config.variables],
+        #                                            [config.objective_function])
+        # temporary_variables = ca.vertcat(config.variables)
+        # replaced_objective_expression = temporary_objective_function([temporary_variables])
+        # temporary_inequality_constraints_function = ca.Function("temporary_inequality_constraints_function",
+        #                                                         [config.variables]
+        #                                                         [config.inequality_constraints])
+        # replaced_inequality_constraints_expression = temporary_inequality_constraints_function([temporary_variables])
         subproblem = OptimizationProblem(config)
         self._subproblems.append(subproblem)
 
@@ -64,10 +65,13 @@ class MultiBlockADMM():
         for i,subproblem in enumerate(self._subproblems):
             # 原始的目标函数的求和
             augmented_lagrange_function += subproblem.get_objective_expression()
+            self.U.append(ca.SX.sym(f'u_{i}',subproblem.A.size1()))
             # 残差项的计算
             residual_vector.append(subproblem.A @ subproblem.get_xs() - subproblem.B)
+        # 残差是向量，是和约束的数量一致的，U是协调变量，U的元素的数量是和约束的数量相等的
+        self.U = ca.vertcat(*self.U)
         residual = ca.vertcat(*residual_vector)
-        augmented_lagrange_function += self._rho/2 *(residual + self.U).T * (residual + self.U)
+        augmented_lagrange_function += self._rho/2 * ca.mtimes((residual + self.U).T,(residual + self.U))
         # 常量是A\B\C\rho，变量是U、X_i，现在已经求到了拉格朗日函数的缩放后的形式augmented_lagrange_function
         # 2.建立子问题的x的梯度的公式，通过一次梯度更新可以得到更新后的x的值，导出公式，放到Function的列表里
         # 已知： 所有的变量的当前值，已知，求在此点的子问题的变量的梯度，更新的是子问题被分离的变量中的一组向量
@@ -83,10 +87,15 @@ class MultiBlockADMM():
 
         next_whole_problem_u = self.U+self._alpha*residual
         # U的更新依赖于所有的X，对于一个分布式的优化问题，子问题里肯定会出现“子问题内变量的数量加起来比总问题多的问题”
-        # 子问题的变量的数量确实一般情况下就是大于总问题的变量数，子问题在设计的时候，需要保持子问题的目标函数的加和是和总问题一致的
+        # 子问题在设计的时候，需要保持子问题的目标函数的加和是和总问题一致的
+        subproblem_xs_sym = []
+        for subproblem in self._subproblems:
+            subproblem_xs_sym.append(subproblem.get_xs())
+
         self._update_u_function = ca.Function("next_u_function",
-                                              [self.U,self._xs],
+                                              [self.U,*subproblem_xs_sym],
                                               [next_whole_problem_u])
+
 
     def solve(self, max_iter: int = 100, tol: float = 1e-4) -> Dict[str, Any]:
         """
@@ -125,7 +134,7 @@ class MultiBlockADMM():
             print(subproblem.B.size2())
             if subproblem.A.size1() != subproblem.B.size1():
                 throw_error("怎么搞的，A、B矩阵的维度都不一致")
-            if subproblem.A.size2() != subproblem.get_xs.size1():
+            if subproblem.A.size2() != subproblem.get_xs().size1():
                 throw_error("怎么搞的，A矩阵的列数和变量的维度不一样")
             lagrange_multiplier_counter += subproblem.A.size1()
 

@@ -33,12 +33,14 @@ if __name__ == '__main__':
     x4 = ca.SX.sym('x4',1)
 
     admm_solver = MultiBlockADMM()
-    admm_solver.set_objective_function(x1**2+x2**2+x3**2+x4**2)
 
     subproblem1 =  OptimizationProblemConfiguration(
         {"variables": [x1, x2],
          "objective_function": x1 ** 2 + x2 ** 2,
-         "equality_constraints": [x1 + x2 - 1],
+         "equality_constraints": {
+             "A" : [ca.DM([1,1])],
+             "B" : [ca.DM([1])]
+         },
          "inequality_constraints": [],
          "initial_guess": [0, 0]
          })
@@ -46,12 +48,16 @@ if __name__ == '__main__':
     subproblem2 = OptimizationProblemConfiguration(
         {"variables": [x3, x4],
          "objective_function": x3 ** 2 + x4 ** 2,
-         "equality_constraints": [x3 + x4 - 1],
+         "equality_constraints": {
+             "A" : [ca.DM([1,1])],
+             "B" : [ca.DM([1])]
+         },
          "inequality_constraints": [],
          "initial_guess": [0, 0]
          })
     admm_solver.add_subproblem(subproblem1)
     admm_solver.add_subproblem(subproblem2)
+    admm_solver.generate_admm_functions()
 
     admm_solver.check()
 
