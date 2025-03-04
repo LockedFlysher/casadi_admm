@@ -36,7 +36,7 @@ class OptimizationProblem:
         self._augmented_equality_penalty = 2  # 增广拉格朗日惩罚因子
         self._augmented_inequality_penalty = 50
         self.A = None
-        self.C = None
+        self.B = None
 
         # 变量相关
         self._x_k = None  # 变量的当前值
@@ -82,11 +82,11 @@ class OptimizationProblem:
             self.set_variables(configuration.variables)
             for inequality_constraint in configuration.inequality_constraints:
                 self.add_inequality_constraint(inequality_constraint)
-            if len(configuration.equality_constraints["A"]) == len(configuration.equality_constraints["C"]):
+            if len(configuration.equality_constraints["A"]) == len(configuration.equality_constraints["B"]):
                 self.A = ca.vertcat(*configuration.equality_constraints["A"]).T
-                self.C = ca.vertcat(*configuration.equality_constraints["C"])
-                for A_line,C_term in zip(configuration.equality_constraints["A"],configuration.equality_constraints["C"]):
-                    self.add_equality_constraint(ca.mtimes(A_line.T,self._xs)- C_term)
+                self.B = ca.vertcat(*configuration.equality_constraints["B"])
+                for A_line,B_term in zip(configuration.equality_constraints["A"],configuration.equality_constraints["B"]):
+                    self.add_equality_constraint(ca.mtimes(A_line.T,self._xs)- B_term)
             else:
                 error("等式矩阵的维度不对")
             self.set_initial_guess(configuration.initial_guess)

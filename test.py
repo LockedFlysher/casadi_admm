@@ -42,6 +42,17 @@ if __name__ == '__main__':
          "inequality_constraints": [],
          "initial_guess": [0, 0]
          })
+
+    subproblem2 = OptimizationProblemConfiguration(
+        {"variables": [x3, x4],
+         "objective_function": x3 ** 2 + x4 ** 2,
+         "equality_constraints": [x3 + x4 - 1],
+         "inequality_constraints": [],
+         "initial_guess": [0, 0]
+         })
     admm_solver.add_subproblem(subproblem1)
+    admm_solver.add_subproblem(subproblem2)
+
+    admm_solver.check()
 
     pass

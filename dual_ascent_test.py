@@ -20,7 +20,7 @@ if __name__ == '__main__':
          # 等式约束要是线性的，满足 Ax = C
          "equality_constraints": {
              "A" : [ca.DM([1,1])],
-             "C" : [ca.DM([1])]
+             "B" : [ca.DM([1])]
          },
          "inequality_constraints": [x1 - x2 + 0.5],
          "initial_guess": [0, 0]
