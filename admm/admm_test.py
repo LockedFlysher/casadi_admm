@@ -1,8 +1,6 @@
-import numpy as np
 import casadi as ca
-import matplotlib.pyplot as plt
-from dual_ascent import OptimizationProblem, OptimizationProblemConfiguration
-from multi_block_admm import MultiBlockADMM
+from dual_ascent.dual_ascent import OptimizationProblemConfiguration
+from admm.multi_block_admm import MultiBlockADMM
 
 # class OptimizationProblemConfiguration:
 #     """优化问题配置类，用于存储优化问题的各种配置参数"""
@@ -59,6 +57,6 @@ if __name__ == '__main__':
     admm_solver.add_subproblem(subproblem2)
     admm_solver.generate_admm_functions()
 
-    admm_solver.check()
+    admm_solver.solve()
 
     pass

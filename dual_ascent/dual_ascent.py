@@ -39,6 +39,7 @@ class OptimizationProblem:
         self.B = None
 
         # 变量相关
+        self._initial_guess = None
         self._x_k = None  # 变量的当前值
         self._xs = None  # 符号变量
         self._num_of_variables = None  # 变量数量
@@ -312,6 +313,9 @@ class OptimizationProblem:
             'inequality_multipliers': self._lambdas
         }
 
+    def get_initial_guess(self):
+        return self._initial_guess
+
     def set_initial_guess(self, initial_guess: Optional[ca.DM] = None):
         """
         设置优化变量和乘子的初始猜测值
@@ -323,6 +327,7 @@ class OptimizationProblem:
             ValueError: 如果未设置变量或未生成拉格朗日函数
         """
         if initial_guess is not None:
+            self._initial_guess = initial_guess
             self._x_k = initial_guess
         else:
             if self._variable_defined:

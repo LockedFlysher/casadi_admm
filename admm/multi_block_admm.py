@@ -1,11 +1,9 @@
-from casadi import vertcat
 from numpy.f2py.auxfuncs import throw_error
-from sympy.physics.vector import gradient
-from sympy.testing.pytest import warns
 
-from dual_ascent import OptimizationProblem, OptimizationProblemConfiguration
+from dual_ascent.dual_ascent import OptimizationProblem, OptimizationProblemConfiguration
 import casadi as ca
-from typing import Dict, List, Union, Optional, Any, Tuple
+from typing import Dict, List, Any
+
 
 class MultiBlockADMM():
     """
@@ -17,12 +15,12 @@ class MultiBlockADMM():
         初始化多块ADMM求解器
         """
         # ADMM参数
-        self._rho = 1.0  # 惩罚参数
-        self._alpha = 0.1
+        self._rho = 0.1  # 惩罚参数
 
         self.Xk = None
         # ADMM管理整个问题的约束协调的缩放后的拉格朗日变量
-        self.U = []  # 对偶变量，就是y/rho，这个是ADMM管理器2需要更新的参数
+        self.U_list = []  # 对偶变量，就是y/rho，这个是ADMM管理器2需要更新的参数
+        self.U_sym = None  # 对偶变量，就是y/rho，这个是ADMM管理器2需要更新的参数
         self.Uk = None
         # 更新x的函数，用到上层的U对其进行更新，总共需要的函数是有 【约束的组数 + 1】 个，达成并行的更新
         self._update_x_functions = []  # 更新各子问题x的函数列表
@@ -59,55 +57,69 @@ class MultiBlockADMM():
         """
         生成多块ADMM算法所需的函数
         """
+        # U的更新依赖于所有的X，对于一个分布式的优化问题，子问题里肯定会出现“子问题内变量的数量加起来比总问题多的问题”
+        # 子问题在设计的时候，需要保持子问题的目标函数的加和是和总问题一致的
+        subproblem_xs_sym = []
+        for subproblem in self._subproblems:
+            subproblem_xs_sym.append(subproblem.get_xs())
         # 1.首要目标是求拉格朗日函数的符号表达式、残差的符号表达式，后续的更新都是靠他们
         augmented_lagrange_function = ca.SX.zeros(1)
         residual_vector = []
         for i,subproblem in enumerate(self._subproblems):
             # 原始的目标函数的求和
             augmented_lagrange_function += subproblem.get_objective_expression()
-            self.U.append(ca.SX.sym(f'u_{i}',subproblem.A.size1()))
+            self.U_list.append(ca.SX.sym(f'u_{i}',subproblem.A.size1()))
             # 残差项的计算
             residual_vector.append(subproblem.A @ subproblem.get_xs() - subproblem.B)
         # 残差是向量，是和约束的数量一致的，U是协调变量，U的元素的数量是和约束的数量相等的
-        self.U = ca.vertcat(*self.U)
+        self.U_sym = ca.vertcat(*self.U_list)
         residual = ca.vertcat(*residual_vector)
-        augmented_lagrange_function += self._rho/2 * ca.mtimes((residual + self.U).T,(residual + self.U))
+        augmented_lagrange_function += self._rho/2 * ca.mtimes((residual + self.U_sym).T,(residual + self.U_sym))
         # 常量是A\B\C\rho，变量是U、X_i，现在已经求到了拉格朗日函数的缩放后的形式augmented_lagrange_function
         # 2.建立子问题的x的梯度的公式，通过一次梯度更新可以得到更新后的x的值，导出公式，放到Function的列表里
         # 已知： 所有的变量的当前值，已知，求在此点的子问题的变量的梯度，更新的是子问题被分离的变量中的一组向量
         for i,subproblem in enumerate(self._subproblems):
+            # gradient内已经有了惩罚系数
             gradient = ca.gradient(augmented_lagrange_function, subproblem.get_xs())
-            next_subproblem_x = subproblem.get_xs() - gradient*self._alpha
-            subproblem_x_update_function = ca.Function("next_x_function",
-                                                       [self.U,subproblem.get_xs()],
+            next_subproblem_x = subproblem.get_xs() - gradient
+            subproblem_x_update_function = ca.Function(f"next_x_function_{i}",
+                                                       [self.U_sym,*subproblem_xs_sym],
                                                        [next_subproblem_x])
-            print("第",i,"个x更新方程建立成功")
+            print("第",i,"个x更新方程建立，输入为Uk、当前的Xk，输出为当前子问题的X_{i}_{k+1}")
             print(subproblem_x_update_function)
             self._update_x_functions.append(subproblem_x_update_function)
 
-        next_whole_problem_u = self.U+self._alpha*residual
-        # U的更新依赖于所有的X，对于一个分布式的优化问题，子问题里肯定会出现“子问题内变量的数量加起来比总问题多的问题”
-        # 子问题在设计的时候，需要保持子问题的目标函数的加和是和总问题一致的
-        subproblem_xs_sym = []
-        for subproblem in self._subproblems:
-            subproblem_xs_sym.append(subproblem.get_xs())
-
+        next_whole_problem_u = self.U_sym+residual
         self._update_u_function = ca.Function("next_u_function",
-                                              [self.U,*subproblem_xs_sym],
+                                              [self.U_sym,*subproblem_xs_sym],
                                               [next_whole_problem_u])
+        print("U更新方程建立，输入为Uk、经过更新后的Xk+1，输出为U_{k+1}")
+        print(self._update_u_function)
 
 
     def solve(self, max_iter: int = 100, tol: float = 1e-4) -> Dict[str, Any]:
         """
         使用多块ADMM算法求解问题
-
         Args:
             max_iter: 最大迭代次数
             tol: 收敛容差
-
         Returns:
             求解结果字典
         """
+        # 0.检查求解的条件是否满足
+        self.check()
+        # 1.初始猜测设置
+        self.Xk = []
+        self.Uk = ca.DM.zeros(self.U_sym.size1())
+        for i,subproblem in enumerate(self._subproblems):
+            self.Xk.append(subproblem.get_initial_guess())
+        for iterator in range(max_iter):
+            for i,subproblem in enumerate(self._subproblems):
+                self.Xk[i] = self._update_x_functions[i](self.Uk,*self.Xk)
+            self.Uk = self._update_u_function(self.Uk,*self.Xk)
+
+        print(self.Xk)
+        pass
 
         # result = {
         #     'x': x_values,
@@ -121,9 +133,8 @@ class MultiBlockADMM():
 
     def check(self):
         # 1.检查子问题的维度，检查Function的构建情况，
-        print("检查项1 ： 拉格朗日乘子维度： ")
+        print(f"检查项1 ： 拉格朗日乘子维度是{self.U_sym.size1()}： ")
         lagrange_multiplier_counter = 0
-        print(self.U.size1)
         for i, subproblem in enumerate(self._subproblems):
             print("正在检查编号为【" + str(i) + "】的子问题")
             # 检查维度是否和函数和拉格朗日匹配，A矩阵在构建的时候是已经转置过了的
@@ -138,10 +149,13 @@ class MultiBlockADMM():
                 throw_error("怎么搞的，A矩阵的列数和变量的维度不一样")
             lagrange_multiplier_counter += subproblem.A.size1()
 
-        if lagrange_multiplier_counter != self.U.size1():
+        if lagrange_multiplier_counter != self.U_sym.size1():
             throw_error("拉格朗日的维度不能和线性约束的矩阵维度一致")
 
         pass
+
+
+
 
     def set_rho(self, rho: float):
         """
