@@ -38,6 +38,9 @@ class MultiBlockADMM():
         # 收敛的评判标准有两个，一个是原问题的残差[Ax-c]^T [Ax-c]、对偶的是对每一组变量求梯度，梯度要接近于0才对
         self._primal_residuals = []
         self._dual_residuals = []
+        # 初始化超参数历史记录
+        self._rho_history = []
+        self._alpha_history = []
 
     def add_subproblem(self, config: OptimizationProblemConfiguration):
         """
@@ -133,6 +136,9 @@ class MultiBlockADMM():
 
         # 迭代求解
         for iterator in range(max_iter):
+            # 记录当前超参数
+            self._rho_history.append(self._rho)
+            self._alpha_history.append(self._alpha)
             # 保存旧值用于计算残差
             x_old = [x.full().copy() for x in self.Xk]
             u_old = self.Uk.full().copy()
