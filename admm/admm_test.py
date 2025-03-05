@@ -48,7 +48,7 @@ if __name__ == '__main__':
          "objective_function": x3 ** 2 + x4 ** 2,
          "equality_constraints": {
              "A" : [ca.DM([1,1])],
-             "B" : [ca.DM([1])]
+             "B" : [ca.DM([0.5])]
          },
          "inequality_constraints": [],
          "initial_guess": [0, 0]

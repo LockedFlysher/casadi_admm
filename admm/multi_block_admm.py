@@ -28,6 +28,7 @@ class MultiBlockADMM():
 
         # 子问题列表内可以访问子问题的矩阵A和B，用来计算原问题的残差，更新变量和乘子的时候都要使用到
         self._subproblems = []  # 子问题列表
+        self.augmented_lagrange_function = ca.SX.zeros(1)
 
         # 收敛的评判标准有两个，一个是原问题的残差[Ax-c]^T [Ax-c]、对偶的是对每一组变量求梯度，梯度要接近于0才对
         self._primal_residuals = []
@@ -63,24 +64,23 @@ class MultiBlockADMM():
         for subproblem in self._subproblems:
             subproblem_xs_sym.append(subproblem.get_xs())
         # 1.首要目标是求拉格朗日函数的符号表达式、残差的符号表达式，后续的更新都是靠他们
-        augmented_lagrange_function = ca.SX.zeros(1)
         residual_vector = []
         for i,subproblem in enumerate(self._subproblems):
             # 原始的目标函数的求和
-            augmented_lagrange_function += subproblem.get_objective_expression()
+            self.augmented_lagrange_function += subproblem.get_objective_expression()
             self.U_list.append(ca.SX.sym(f'u_{i}',subproblem.A.size1()))
             # 残差项的计算
             residual_vector.append(subproblem.A @ subproblem.get_xs() - subproblem.B)
         # 残差是向量，是和约束的数量一致的，U是协调变量，U的元素的数量是和约束的数量相等的
         self.U_sym = ca.vertcat(*self.U_list)
         residual = ca.vertcat(*residual_vector)
-        augmented_lagrange_function += self._rho/2 * ca.mtimes((residual + self.U_sym).T,(residual + self.U_sym))
-        # 常量是A\B\C\rho，变量是U、X_i，现在已经求到了拉格朗日函数的缩放后的形式augmented_lagrange_function
+        self.augmented_lagrange_function += self._rho/2 * ca.mtimes((residual + self.U_sym).T,(residual + self.U_sym))
+        # 常量是A\B\C\rho，变量是U、X_i，现在已经求到了拉格朗日函数的缩放后的形式self.augmented_lagrange_function
         # 2.建立子问题的x的梯度的公式，通过一次梯度更新可以得到更新后的x的值，导出公式，放到Function的列表里
         # 已知： 所有的变量的当前值，已知，求在此点的子问题的变量的梯度，更新的是子问题被分离的变量中的一组向量
         for i,subproblem in enumerate(self._subproblems):
             # gradient内已经有了惩罚系数
-            gradient = ca.gradient(augmented_lagrange_function, subproblem.get_xs())
+            gradient = ca.gradient(self.augmented_lagrange_function, subproblem.get_xs())
             next_subproblem_x = subproblem.get_xs() - gradient
             subproblem_x_update_function = ca.Function(f"next_x_function_{i}",
                                                        [self.U_sym,*subproblem_xs_sym],
@@ -89,7 +89,7 @@ class MultiBlockADMM():
             print(subproblem_x_update_function)
             self._update_x_functions.append(subproblem_x_update_function)
 
-        next_whole_problem_u = self.U_sym+residual
+        next_whole_problem_u = self.U_sym +  residual
         self._update_u_function = ca.Function("next_u_function",
                                               [self.U_sym,*subproblem_xs_sym],
                                               [next_whole_problem_u])
@@ -97,7 +97,7 @@ class MultiBlockADMM():
         print(self._update_u_function)
 
 
-    def solve(self, max_iter: int = 100, tol: float = 1e-4) -> Dict[str, Any]:
+    def solve(self, max_iter: int = 1000, tol: float = 1e-4) -> Dict[str, Any]:
         """
         使用多块ADMM算法求解问题
         Args:
@@ -153,8 +153,6 @@ class MultiBlockADMM():
             throw_error("拉格朗日的维度不能和线性约束的矩阵维度一致")
 
         pass
-
-
 
 
     def set_rho(self, rho: float):
