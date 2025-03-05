@@ -57,6 +57,6 @@ if __name__ == '__main__':
     admm_solver.add_subproblem(subproblem2)
     admm_solver.generate_admm_functions()
 
-    admm_solver.solve()
+    print(admm_solver.solve())
 
     pass

@@ -354,6 +354,9 @@ class OptimizationProblem:
         self._mu_k = mu_
         self._lambda_k = lambda_
 
+    def has_inequality_constraints(self):
+        return len(self._inequality_constraints) > 0
+
     def compute_next_x(self, x: ca.DM, mu_: ca.DM, lambda_: ca.DM) -> Dict[str, ca.DM]:
         """
         计算下一步的优化变量和乘子值
