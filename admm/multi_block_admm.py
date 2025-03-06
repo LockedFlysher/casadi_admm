@@ -18,8 +18,8 @@ class MultiBlockADMM():
         初始化多块ADMM求解器
         """
         # ADMM参数
-        self._rho = 0.15  # 惩罚参数
-        self._alpha = 0.05  # 梯度步长参数
+        self._rho = 0.13  # 惩罚参数
+        self._alpha = 0.4  # 梯度步长参数
         self._adaptive_rho = True  # 是否使用自适应惩罚参数
         self._verbose = True  # 是否输出详细信息
 
@@ -30,7 +30,7 @@ class MultiBlockADMM():
 
         self._Xk = None
         # ADMM管理整个问题的约束协调的缩放后的拉格朗日变量
-        self._U_sym = None  # 对偶变量，就是y/rho，这个是ADMM管理器2需要更新的参数
+        self._U_sym = None  # 对偶变量，就是mu/rho
         self._Uk = None
         # 更新x的函数，用到上层的U对其进行更新，总共需要的函数是有 【约束的组数 + 1】 个，达成并行的更新
         self._update_x_functions = []  # 更新各子问题x的函数列表
@@ -82,7 +82,7 @@ class MultiBlockADMM():
                 sub_block_index += block_size
 
             self._U_sym = ca.SX.sym("U", self._A.size1())
-            self._augmented_lagrange_term += ca.sumsqr(self._rho * self._residual + self._U_sym)
+            self._augmented_lagrange_term += self._rho/2.0 *ca.sumsqr(self._residual + self._U_sym)
             self._linear_constraint_set = True
         else:
             warns("线性约束已经设置完成了不要重复设置")
@@ -122,7 +122,7 @@ class MultiBlockADMM():
                 print(f"第 {i} 个x更新方程建立，输入为Uk、当前的Xk，输出为当前子问题的X_i_k+1")
 
         # 3.建立对偶变量更新函数
-        next_u = self._U_sym + self._alpha * ca.mtimes(self._A, ca.vertcat(*self._subproblem_xs_list)) - self._B
+        next_u = self._U_sym + ca.mtimes(self._A, ca.vertcat(*self._subproblem_xs_list)) - self._B
 
         self._update_u_function = ca.Function(
             "next_u_function",
@@ -207,7 +207,7 @@ class MultiBlockADMM():
             if primal_res > 1e10 or dual_res > 1e10:
                 if self._verbose:
                     print("警告: 残差过大，算法可能发散。尝试减小步长参数alpha和增大惩罚参数rho。")
-                self._alpha *= 0.1  # 减小步长
+                self._alpha *= 0.9  # 减小步长
                 self._rho *= 1.1  # 增大惩罚参数
                 break
 
@@ -233,7 +233,7 @@ class MultiBlockADMM():
 
     def _calculate_dual_residual(self, x_old):
         """计算对偶残差"""
-        dual_res = self._rho * ca.sumsqr(ca.vertcat(*self._Xk) - ca.vertcat(*x_old))
+        dual_res = self._rho * ca.sumsqr(ca.mtimes(self._A,(ca.vertcat(*self._Xk) - ca.vertcat(*x_old))))
         return float(dual_res)
 
     def _update_parameters(self, primal_res, dual_res, iteration):
@@ -242,9 +242,9 @@ class MultiBlockADMM():
         old_rho = self._rho
 
         if primal_res > 10 * dual_res:
-            self._rho *= 1.5
+            self._rho *= 1.01
         elif dual_res > 10 * primal_res:
-            self._rho *= 0.8
+            self._rho *= 0.99
 
         # 如果rho改变了，需要调整U以保持lambda = rho * U不变
         if old_rho != self._rho:
@@ -259,11 +259,11 @@ class MultiBlockADMM():
                 # 如果残差持续增加，减小步长
                 if (self._primal_residuals[-1] > self._primal_residuals[-2] and
                         self._primal_residuals[-2] > self._primal_residuals[-3]):
-                    self._alpha *= 0.9
+                    self._alpha *= 0.99
                 # 如果残差持续减少，可以尝试增大步长
                 elif (self._primal_residuals[-1] < self._primal_residuals[-2] and
                       self._primal_residuals[-2] < self._primal_residuals[-3]):
-                    self._alpha *= 1.1
+                    self._alpha *= 1.01
                     self._alpha = min(self._alpha, 0.5)  # 步长上限
 
             if old_alpha != self._alpha and self._verbose:

@@ -108,12 +108,12 @@ if __name__ == '__main__':
                                               objective_function=x3 ** 2 + x4 ** 2)
     admm_solver.add_subproblem(config)
     admm_solver.add_subproblem(config2)
-    admm_solver.set_linear_equality_constraint(ca.DM([[1,1,0,0],[0,0,1,-1]]),
-                                               ca.DM([1,2]))
+    admm_solver.set_linear_equality_constraint(ca.DM([[1,1,1,0],[1,0,1,-1]]),
+                                               ca.DM([-3,4]))
 
     admm_solver.generate_admm_functions()
 
-    result = admm_solver.solve(tol=1e-2)
+    result = admm_solver.solve(tol=1e-3)
     print(result)
     plot_admm_convergence(admm_solver, result)
     pass
