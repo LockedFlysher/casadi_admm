@@ -109,7 +109,7 @@ if __name__ == '__main__':
     admm_solver.add_subproblem(config)
     admm_solver.add_subproblem(config2)
     admm_solver.set_linear_equality_constraint(ca.DM([[1,1,1,0],[1,0,1,-1]]),
-                                               ca.DM([-3,4]))
+                                               ca.DM([-3,20]))
 
     admm_solver.generate_admm_functions()
 
