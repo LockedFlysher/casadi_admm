@@ -18,14 +18,14 @@ class MultiBlockADMM():
         初始化多块ADMM求解器
         """
         # ADMM参数
-        self._rho = 0.1  # 惩罚参数
-        self._alpha = 0.1  # 梯度步长参数
+        self._rho = 0.15  # 惩罚参数
+        self._alpha = 0.05  # 梯度步长参数
         self._adaptive_rho = True  # 是否使用自适应惩罚参数
         self._verbose = True  # 是否输出详细信息
 
         self._A = None
         # 用来动态地更新残差，用相邻的两项更新残差，减去上一步未更新项的值、加上被更新项的值
-        self._A_list = []
+        # self._A_list = []
         self._B = None
 
         self._Xk = None
@@ -63,26 +63,26 @@ class MultiBlockADMM():
         self._subproblem_xs_list.append(subproblem.get_xs())
         self._subproblems.append(subproblem)
 
-    def set_linear_equality_constraint(self,constraint_A:ca.DM,constraint_B:ca.DM):
+    def set_linear_equality_constraint(self, constraint_A: ca.DM, constraint_B: ca.DM):
         if not self._linear_constraint_set:
-            # todo : 防止二次调用
             self._A = constraint_A
             # A 是一个矩阵，B 是一个向量
             self._B = constraint_B
             if self._A.size1() != self._B.size1():
                 warns("A\B矩阵维度不匹配，约束的数量需要一致")
             xs = ca.vertcat(*self._subproblem_xs_list)
-            self._residual = ca.norm_2(ca.mtimes(self._A,xs) - self._B)
+            # 残差项是一个向量
+            self._residual = ca.mtimes(self._A, xs) - self._B
             print("残差项已经计算了")
             sub_block_index = 0
-            for i,subproblem in enumerate(self._subproblems):
+            for i, subproblem in enumerate(self._subproblems):
                 block_size = subproblem.get_xs().size1()
-                self._augmented_lagrange_term+= subproblem.get_objective_expression()
-                self._A_list.append(self._A[:,ca.Slice(sub_block_index,sub_block_index+block_size)])
-                sub_block_index+=block_size
+                self._augmented_lagrange_term += subproblem.get_objective_expression()
+                # self._A_list.append(self._A[:,ca.Slice(sub_block_index,sub_block_index+block_size)])
+                sub_block_index += block_size
 
-            self._U_sym = ca.SX.sym("U",self._A.size1())
-            self._augmented_lagrange_term+=self._residual
+            self._U_sym = ca.SX.sym("U", self._A.size1())
+            self._augmented_lagrange_term += ca.sumsqr(self._rho * self._residual + self._U_sym)
             self._linear_constraint_set = True
         else:
             warns("线性约束已经设置完成了不要重复设置")
@@ -95,7 +95,6 @@ class MultiBlockADMM():
         生成多块ADMM算法所需的函数 - 使用梯度下降方法（保留原有的封闭形式解）
         """
         # 子问题在设计的时候，需要保持子问题的目标函数的加和是和总问题一致的
-
         # 1.首要目标是求拉格朗日函数的符号表达式、残差的符号表达式，后续的更新都是靠他们
 
         # todo: 残差项的计算应该是通过一个大的整的A来进行计算的！包括U的计算也是，我们需要先构建起来大的A、B矩阵再计算残差项
@@ -104,15 +103,13 @@ class MultiBlockADMM():
         if not self._linear_constraint_set:
             throw_error("线性约束没有施加")
 
-
         # 残差是向量，是和约束的数量一致的，U是协调变量，U的元素的数量是和约束的数量相等的
         self._augmented_lagrange_term = self.get_augmented_lagrange_function()
-
         # 2.建立子问题的x的梯度的公式，通过一次梯度更新可以得到更新后的x的值，导出公式，放到Function的列表里
         self._update_x_functions = []  # 清空之前的函数
         for i, subproblem in enumerate(self._subproblems):
             gradient = ca.gradient(self._augmented_lagrange_term, subproblem.get_xs())
-            next_subproblem_x = subproblem.get_xs() - self._alpha * gradient
+            next_subproblem_x = subproblem.get_xs() - self._alpha * self._rho * gradient
             # 更新函数
             subproblem_x_update_function = ca.Function(
                 f"next_x_function_{i}",
@@ -125,7 +122,7 @@ class MultiBlockADMM():
                 print(f"第 {i} 个x更新方程建立，输入为Uk、当前的Xk，输出为当前子问题的X_i_k+1")
 
         # 3.建立对偶变量更新函数
-        next_u = self._U_sym + self._rho * (ca.mtimes(self._A, ca.vertcat(*self._subproblem_xs_list)) - self._B)
+        next_u = self._U_sym + self._alpha * ca.mtimes(self._A, ca.vertcat(*self._subproblem_xs_list)) - self._B
 
         self._update_u_function = ca.Function(
             "next_u_function",
@@ -136,7 +133,7 @@ class MultiBlockADMM():
         if self._verbose:
             print("U更新方程建立，输入为Uk、经过更新后的Xk+1，输出为U_{k+1}")
 
-    def solve(self, max_iter: int = 1000, tol: float = 1e-4) -> Dict[str, Any]:
+    def solve(self, max_iter: int = 10000, tol: float = 1e-2) -> Dict[str, Any]:
         """
         使用多块ADMM算法求解问题
 
@@ -152,7 +149,7 @@ class MultiBlockADMM():
 
         # 初始化变量
         self._Xk = []
-        self._Uk = ca.DM.zeros(self._U_sym.size1())
+        self._Uk = [ca.DM.zeros(self._U_sym.size1())]
         self._primal_residuals = []
         self._dual_residuals = []
 
@@ -165,15 +162,15 @@ class MultiBlockADMM():
             self._rho_history.append(self._rho)
             self._alpha_history.append(self._alpha)
             # 保存旧值用于计算残差
-            x_old = self._Xk
-            u_old = self._Uk
+            x_old = self._Xk.copy()
+            u_old = self._Uk.copy()
 
             # 更新每个子问题的变量（使用梯度下降）
             for i, subproblem in enumerate(self._subproblems):
-                self._Xk[i] = self._update_x_functions[i](self._Uk, *self._Xk)
+                self._Xk[i] = self._update_x_functions[i](*self._Uk, *self._Xk)
 
             # 更新对偶变量
-            self._Uk = self._update_u_function(self._Uk, *self._Xk)
+            self._Uk = [self._update_u_function(*self._Uk, *self._Xk)]
 
             # 计算残差
             primal_res = self._calculate_primal_residual()
@@ -191,7 +188,16 @@ class MultiBlockADMM():
             if primal_res < tol and dual_res < tol:
                 if self._verbose:
                     print(f"ADMM收敛于第 {iterator} 次迭代")
-                break
+                    # 构建结果
+                    result = {
+                        'x': [x.full() for x in self._Xk],
+                        'u': self._Uk,
+                        'iterations': iterator + 1,
+                        'primal_residual': primal_res,
+                        'dual_residual': dual_res,
+                        'convergence_history': self.get_convergence_history()
+                    }
+                    return result
 
             # 自适应调整参数
             if self._adaptive_rho and iterator > 0 and iterator % 5 == 0:
@@ -201,8 +207,8 @@ class MultiBlockADMM():
             if primal_res > 1e10 or dual_res > 1e10:
                 if self._verbose:
                     print("警告: 残差过大，算法可能发散。尝试减小步长参数alpha和增大惩罚参数rho。")
-                self._alpha *= 0.5  # 减小步长
-                self._rho *= 2.0  # 增大惩罚参数
+                self._alpha *= 0.1  # 减小步长
+                self._rho *= 1.1  # 增大惩罚参数
                 break
 
         if iterator == max_iter - 1 and self._verbose:
@@ -211,7 +217,7 @@ class MultiBlockADMM():
         # 构建结果
         result = {
             'x': [x.full() for x in self._Xk],
-            'u': self._Uk.full(),
+            'u': self._Uk,
             'iterations': iterator + 1,
             'primal_residual': primal_res,
             'dual_residual': dual_res,
@@ -222,12 +228,12 @@ class MultiBlockADMM():
 
     def _calculate_primal_residual(self):
         """计算原问题残差"""
-        residual = ca.norm_2(ca.mtimes(self._A,ca.vertcat(*self._Xk))-self._B)
+        residual = ca.sumsqr(ca.mtimes(self._A, ca.vertcat(*self._Xk)) - self._B)
         return float(residual)
 
     def _calculate_dual_residual(self, x_old):
         """计算对偶残差"""
-        dual_res = self._rho * ca.norm_2(ca.vertcat(*self._Xk)-ca.vertcat(*x_old))
+        dual_res = self._rho * ca.sumsqr(ca.vertcat(*self._Xk) - ca.vertcat(*x_old))
         return float(dual_res)
 
     def _update_parameters(self, primal_res, dual_res, iteration):
@@ -242,7 +248,7 @@ class MultiBlockADMM():
 
         # 如果rho改变了，需要调整U以保持lambda = rho * U不变
         if old_rho != self._rho:
-            self._Uk = (old_rho / self._rho) * self._Uk
+            self._Uk = [self._Uk[0] * (old_rho / self._rho)]
             if self._verbose:
                 print(f"调整惩罚参数: rho从 {old_rho} 更新到 {self._rho}")
 
@@ -253,7 +259,7 @@ class MultiBlockADMM():
                 # 如果残差持续增加，减小步长
                 if (self._primal_residuals[-1] > self._primal_residuals[-2] and
                         self._primal_residuals[-2] > self._primal_residuals[-3]):
-                    self._alpha *= 0.8
+                    self._alpha *= 0.9
                 # 如果残差持续减少，可以尝试增大步长
                 elif (self._primal_residuals[-1] < self._primal_residuals[-2] and
                       self._primal_residuals[-2] < self._primal_residuals[-3]):
@@ -278,8 +284,6 @@ class MultiBlockADMM():
 
         if self._alpha <= 0:
             raise ValueError("步长参数alpha必须为正数")
-
-
 
     def set_rho(self, rho: float):
         """设置ADMM惩罚参数"""
