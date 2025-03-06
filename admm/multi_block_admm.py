@@ -1,9 +1,10 @@
+from casadi import vertcat
 from numpy.f2py.auxfuncs import throw_error
-import matplotlib.pyplot as plt
+from sympy.testing.pytest import warns
+
 from dual_ascent.dual_ascent import OptimizationProblem, OptimizationProblemConfiguration
 import casadi as ca
 from typing import Dict, List, Any
-import numpy as np
 
 
 class MultiBlockADMM():
@@ -22,18 +23,23 @@ class MultiBlockADMM():
         self._adaptive_rho = True  # 是否使用自适应惩罚参数
         self._verbose = True  # 是否输出详细信息
 
-        self.Xk = None
+        self._A = None
+        # 用来动态地更新残差，用相邻的两项更新残差，减去上一步未更新项的值、加上被更新项的值
+        self._A_list = []
+        self._B = None
+
+        self._Xk = None
         # ADMM管理整个问题的约束协调的缩放后的拉格朗日变量
-        self.U_list = []  # 对偶变量，就是y/rho，这个是ADMM管理器2需要更新的参数
-        self.U_sym = None  # 对偶变量，就是y/rho，这个是ADMM管理器2需要更新的参数
-        self.Uk = None
+        self._U_sym = None  # 对偶变量，就是y/rho，这个是ADMM管理器2需要更新的参数
+        self._Uk = None
         # 更新x的函数，用到上层的U对其进行更新，总共需要的函数是有 【约束的组数 + 1】 个，达成并行的更新
         self._update_x_functions = []  # 更新各子问题x的函数列表
         self._update_u_function = None  # 更新对偶变量的函数
+        self._residual = None
 
         # 子问题列表内可以访问子问题的矩阵A和B，用来计算原问题的残差，更新变量和乘子的时候都要使用到
         self._subproblems = []  # 子问题列表
-        self.augmented_lagrange_function = ca.SX.zeros(1)
+        self._augmented_lagrange_term = ca.SX.zeros(1)
 
         # 收敛的评判标准有两个，一个是原问题的残差[Ax-c]^T [Ax-c]、对偶的是对每一组变量求梯度，梯度要接近于0才对
         self._primal_residuals = []
@@ -41,71 +47,90 @@ class MultiBlockADMM():
         # 初始化超参数历史记录
         self._rho_history = []
         self._alpha_history = []
+        self._subproblem_xs_list = []
+        self._linear_constraint_set = False
 
     def add_subproblem(self, config: OptimizationProblemConfiguration):
         """
-        添加子问题
-
+        添加子问题，只需要添加：
+        1.变量列表
+        2.不等式约束
+        3.初始的猜测解
         Args:
             config: 子问题的配置
         """
         subproblem = OptimizationProblem(config)
+        self._subproblem_xs_list.append(subproblem.get_xs())
         self._subproblems.append(subproblem)
+
+    def set_linear_equality_constraint(self,constraint_A:ca.DM,constraint_B:ca.DM):
+        if not self._linear_constraint_set:
+            # todo : 防止二次调用
+            self._A = constraint_A
+            # A 是一个矩阵，B 是一个向量
+            self._B = constraint_B
+            if self._A.size1() != self._B.size1():
+                warns("A\B矩阵维度不匹配，约束的数量需要一致")
+            xs = ca.vertcat(*self._subproblem_xs_list)
+            self._residual = ca.norm_2(ca.mtimes(self._A,xs) - self._B)
+            print("残差项已经计算了")
+            sub_block_index = 0
+            for i,subproblem in enumerate(self._subproblems):
+                block_size = subproblem.get_xs().size1()
+                self._augmented_lagrange_term+= subproblem.get_objective_expression()
+                self._A_list.append(self._A[:,ca.Slice(sub_block_index,sub_block_index+block_size)])
+                sub_block_index+=block_size
+
+            self._U_sym = ca.SX.sym("U",self._A.size1())
+            self._augmented_lagrange_term+=self._residual
+            self._linear_constraint_set = True
+        else:
+            warns("线性约束已经设置完成了不要重复设置")
+
+    def get_augmented_lagrange_function(self):
+        return self._augmented_lagrange_term
 
     def generate_admm_functions(self):
         """
         生成多块ADMM算法所需的函数 - 使用梯度下降方法（保留原有的封闭形式解）
         """
         # 子问题在设计的时候，需要保持子问题的目标函数的加和是和总问题一致的
-        subproblem_xs_sym = []
-        for subproblem in self._subproblems:
-            subproblem_xs_sym.append(subproblem.get_xs())
 
         # 1.首要目标是求拉格朗日函数的符号表达式、残差的符号表达式，后续的更新都是靠他们
-        self.U_list = []
-        self.augmented_lagrange_function = ca.SX.zeros(1)
-        residual_vector = []
 
-        for i, subproblem in enumerate(self._subproblems):
-            # 原始的目标函数的求和
-            self.augmented_lagrange_function += subproblem.get_objective_expression()
-            self.U_list.append(ca.SX.sym(f'u_{i}', subproblem.A.size1()))
-            # 残差项的计算
-            residual_vector.append(subproblem.A @ subproblem.get_xs() - subproblem.B)
+        # todo: 残差项的计算应该是通过一个大的整的A来进行计算的！包括U的计算也是，我们需要先构建起来大的A、B矩阵再计算残差项
+        # todo: 残差项的更新采用简单方法更新，不能每一次都计算所有的残差块，省一点时间，需要做一下图
+
+        if not self._linear_constraint_set:
+            throw_error("线性约束没有施加")
+
 
         # 残差是向量，是和约束的数量一致的，U是协调变量，U的元素的数量是和约束的数量相等的
-        self.U_sym = ca.vertcat(*self.U_list)
-        residual = ca.vertcat(*residual_vector)
-        self.augmented_lagrange_function += self._rho / 2 * ca.mtimes((residual + self.U_sym).T,
-                                                                      (residual + self.U_sym))
+        self._augmented_lagrange_term = self.get_augmented_lagrange_function()
 
         # 2.建立子问题的x的梯度的公式，通过一次梯度更新可以得到更新后的x的值，导出公式，放到Function的列表里
         self._update_x_functions = []  # 清空之前的函数
-
         for i, subproblem in enumerate(self._subproblems):
-            # 计算梯度
-            gradient = ca.gradient(self.augmented_lagrange_function, subproblem.get_xs())
-            # 使用步长参数进行更新
+            gradient = ca.gradient(self._augmented_lagrange_term, subproblem.get_xs())
             next_subproblem_x = subproblem.get_xs() - self._alpha * gradient
-
-            # 创建更新函数
+            # 更新函数
             subproblem_x_update_function = ca.Function(
                 f"next_x_function_{i}",
-                [self.U_sym, *subproblem_xs_sym],
+                [self._U_sym, *self._subproblem_xs_list],
                 [next_subproblem_x]
             )
+            self._update_x_functions.append(subproblem_x_update_function)
 
             if self._verbose:
                 print(f"第 {i} 个x更新方程建立，输入为Uk、当前的Xk，输出为当前子问题的X_i_k+1")
 
-            self._update_x_functions.append(subproblem_x_update_function)
-
         # 3.建立对偶变量更新函数
-        next_whole_problem_u = self.U_sym + residual
+        next_u = self._U_sym + self._rho * (ca.mtimes(self._A, ca.vertcat(*self._subproblem_xs_list)) - self._B)
+
         self._update_u_function = ca.Function(
             "next_u_function",
-            [self.U_sym, *subproblem_xs_sym],
-            [next_whole_problem_u]
+            [self._U_sym, *self._subproblem_xs_list],
+            [next_u]
         )
 
         if self._verbose:
@@ -126,13 +151,13 @@ class MultiBlockADMM():
         self.check()
 
         # 初始化变量
-        self.Xk = []
-        self.Uk = ca.DM.zeros(self.U_sym.size1())
+        self._Xk = []
+        self._Uk = ca.DM.zeros(self._U_sym.size1())
         self._primal_residuals = []
         self._dual_residuals = []
 
         for i, subproblem in enumerate(self._subproblems):
-            self.Xk.append(ca.DM(subproblem.get_initial_guess()))
+            self._Xk.append(ca.DM(subproblem.get_initial_guess()))
 
         # 迭代求解
         for iterator in range(max_iter):
@@ -140,15 +165,15 @@ class MultiBlockADMM():
             self._rho_history.append(self._rho)
             self._alpha_history.append(self._alpha)
             # 保存旧值用于计算残差
-            x_old = [x.full().copy() for x in self.Xk]
-            u_old = self.Uk.full().copy()
+            x_old = self._Xk
+            u_old = self._Uk
 
             # 更新每个子问题的变量（使用梯度下降）
             for i, subproblem in enumerate(self._subproblems):
-                self.Xk[i] = self._update_x_functions[i](self.Uk, *self.Xk)
+                self._Xk[i] = self._update_x_functions[i](self._Uk, *self._Xk)
 
             # 更新对偶变量
-            self.Uk = self._update_u_function(self.Uk, *self.Xk)
+            self._Uk = self._update_u_function(self._Uk, *self._Xk)
 
             # 计算残差
             primal_res = self._calculate_primal_residual()
@@ -185,8 +210,8 @@ class MultiBlockADMM():
 
         # 构建结果
         result = {
-            'x': [x.full() for x in self.Xk],
-            'u': self.Uk.full(),
+            'x': [x.full() for x in self._Xk],
+            'u': self._Uk.full(),
             'iterations': iterator + 1,
             'primal_residual': primal_res,
             'dual_residual': dual_res,
@@ -197,19 +222,12 @@ class MultiBlockADMM():
 
     def _calculate_primal_residual(self):
         """计算原问题残差"""
-        residual = ca.DM.zeros(1)
-        for i, subproblem in enumerate(self._subproblems):
-            r_i = subproblem.A @ self.Xk[i] - subproblem.B
-            residual += ca.norm_2(r_i)
+        residual = ca.norm_2(ca.mtimes(self._A,ca.vertcat(*self._Xk))-self._B)
         return float(residual)
 
     def _calculate_dual_residual(self, x_old):
         """计算对偶残差"""
-        dual_res = ca.DM.zeros(1)
-        for i, subproblem in enumerate(self._subproblems):
-            # 计算 x_i^(k+1) - x_i^k 的变化量
-            diff = self.Xk[i] - x_old[i]
-            dual_res += self._rho * ca.norm_2(subproblem.A @ diff)
+        dual_res = self._rho * ca.norm_2(ca.vertcat(*self._Xk)-ca.vertcat(*x_old))
         return float(dual_res)
 
     def _update_parameters(self, primal_res, dual_res, iteration):
@@ -224,7 +242,7 @@ class MultiBlockADMM():
 
         # 如果rho改变了，需要调整U以保持lambda = rho * U不变
         if old_rho != self._rho:
-            self.Uk = (old_rho / self._rho) * self.Uk
+            self._Uk = (old_rho / self._rho) * self._Uk
             if self._verbose:
                 print(f"调整惩罚参数: rho从 {old_rho} 更新到 {self._rho}")
 
@@ -261,30 +279,7 @@ class MultiBlockADMM():
         if self._alpha <= 0:
             raise ValueError("步长参数alpha必须为正数")
 
-        # 检查拉格朗日乘子维度
-        if self._verbose:
-            print(f"检查项1: 拉格朗日乘子维度是 {self.U_sym.size1()}")
 
-        lagrange_multiplier_counter = 0
-        for i, subproblem in enumerate(self._subproblems):
-            if self._verbose:
-                print(f"正在检查编号为【{i}】的子问题")
-
-            # 检查维度是否与函数和拉格朗日匹配
-            if self._verbose:
-                print(f"线性约束矩阵A: {subproblem.A.size1()}×{subproblem.A.size2()}")
-                print(f"线性约束向量B: {subproblem.B.size1()}×{subproblem.B.size2()}")
-
-            if subproblem.A.size1() != subproblem.B.size1():
-                throw_error(f"子问题{i}的约束矩阵A和B的行数不一致")
-
-            if subproblem.A.size2() != subproblem.get_xs().size1():
-                throw_error(f"子问题{i}的约束矩阵A的列数与变量维度不一致")
-
-            lagrange_multiplier_counter += subproblem.A.size1()
-
-        if lagrange_multiplier_counter != self.U_sym.size1():
-            throw_error(f"拉格朗日乘子维度({self.U_sym.size1()})与线性约束总数({lagrange_multiplier_counter})不一致")
 
     def set_rho(self, rho: float):
         """设置ADMM惩罚参数"""

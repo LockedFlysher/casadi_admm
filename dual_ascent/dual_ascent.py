@@ -274,7 +274,7 @@ class OptimizationProblem:
 
         # 如果提供了配置，则使用配置初始化
         if configuration is not None:
-            self.set_objective_function(configuration.objective_function)
+            self.set_objective_expression(configuration.objective_function)
             self.set_variables(configuration.variables)
             for inequality_constraint in configuration.inequality_constraints:
                 self.add_inequality_constraint(inequality_constraint)
@@ -617,10 +617,9 @@ class OptimizationProblem:
         else:
             import warnings
             warnings.warn('请不要多次尝试初始化拉格朗日乘子')
-
         self._multiplier_defined = True
 
-    def set_objective_function(self, objective_expression: ca.SX):
+    def set_objective_expression(self, objective_expression: ca.SX):
         """
         设置优化问题的目标函数
 
@@ -699,7 +698,7 @@ class OptimizationProblem:
                 raise ValueError("未设置变量，无法设置初始猜测值")
 
             if initial_guess.size1() != self._xs.size1():
-                raise ValueError(f"初始猜测值维度 ({len(initial_guess)}) 与变量维度 ({self._xs.size1()}) 不匹配")
+                raise ValueError(f"初始猜测值维度 ({initial_guess.size1()}) 与变量维度 ({self._xs.size1()}) 不匹配")
 
             self._initial_guess = ca.DM(initial_guess)
             self._x_k = initial_guess

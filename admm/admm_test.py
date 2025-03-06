@@ -97,38 +97,23 @@ def plot_admm_convergence(admm_solver, result, figsize=(15, 16), save_path=None)
 
 
 if __name__ == '__main__':
-    x1 = ca.SX.sym('x1',1)
-    x2 = ca.SX.sym('x2',1)
-    x3 = ca.SX.sym('x3',1)
-    x4 = ca.SX.sym('x4',1)
-
+    x1 = ca.SX.sym('x1', 1)
+    x2 = ca.SX.sym('x2', 1)
+    x3 = ca.SX.sym('x3', 1)
+    x4 = ca.SX.sym('x4', 1)
     admm_solver = MultiBlockADMM()
+    config = OptimizationProblemConfiguration(variables=[x1, x2],
+                                              objective_function=x1 ** 2 + x2 ** 2)
+    config2 = OptimizationProblemConfiguration(variables=[x3, x4],
+                                              objective_function=x3 ** 2 + x4 ** 2)
+    admm_solver.add_subproblem(config)
+    admm_solver.add_subproblem(config2)
+    admm_solver.set_linear_equality_constraint(ca.DM([[1,1,0,0],[0,0,1,-1]]),
+                                               ca.DM([1,1]))
 
-    subproblem1 =  OptimizationProblemConfiguration(
-        {"variables": [x1, x2],
-         "objective_function": x1 ** 2 + x2 ** 2,
-         "equality_constraints": {
-             "A" : [ca.DM([1,1])],
-             "B" : [ca.DM([1])]
-         },
-         "inequality_constraints": [],
-         "initial_guess": [0, 0]
-         })
-
-    subproblem2 = OptimizationProblemConfiguration(
-        {"variables": [x3, x4],
-         "objective_function": x3 ** 2 + x4 ** 2,
-         "equality_constraints": {
-             "A" : [ca.DM([1,1])],
-             "B" : [ca.DM([0.5])]
-         },
-         "inequality_constraints": [],
-         "initial_guess": [0, 0]
-         })
-    admm_solver.add_subproblem(subproblem1)
-    admm_solver.add_subproblem(subproblem2)
     admm_solver.generate_admm_functions()
 
-    result = admm_solver.solve(tol=1e-2)
+    result = admm_solver.solve(tol=1e-6)
+    print(result)
     plot_admm_convergence(admm_solver, result)
     pass
